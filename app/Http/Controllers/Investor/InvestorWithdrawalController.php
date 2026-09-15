@@ -5,12 +5,22 @@ namespace App\Http\Controllers\Investor;
 
 use App\Http\Controllers\Controller;
 use App\Models\Withdrawal;
+use App\Services\TelegramService;
+use App\Services\FinancialNotificationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 
 class InvestorWithdrawalController extends Controller
 {
+    protected TelegramService $telegram;
+    protected FinancialNotificationService $financialNotifier;
+
+    public function __construct(TelegramService $telegram, FinancialNotificationService $financialNotifier)
+    {
+        $this->telegram          = $telegram;
+        $this->financialNotifier = $financialNotifier;
+    }
     // GET /investor-investment/investor/withdrawals
     public function index(Request $request)
     {
@@ -127,6 +137,25 @@ class InvestorWithdrawalController extends Controller
             'account_details' => json_encode($accountDetails),
             'status'          => 'pending',
         ]);
+
+        // Telegram + in-app financial team alerts. Previously this
+        // controller sent neither — TelegramService::newWithdrawal()
+        // existed but was never actually called from anywhere. Wiring
+        // it up here is additive: nothing before this depended on it
+        // being silent, and both calls fail safely on their own if
+        // Telegram/notifications are ever unreachable.
+        $investorName = $user->name ?? $user->full_name ?? 'Investor';
+        $this->telegram->newWithdrawal($investorName, (float) $withdrawal->amount, $withdrawal->method);
+
+        // See InvestorDepositController::initiate() for why this is
+        // guarded: notifyFinancialTeam() has no internal try/catch, so
+        // without this a notification failure would 500 an otherwise
+        // successful withdrawal request.
+        try {
+            $this->financialNotifier->newWithdrawal($withdrawal->id, $investorName, (float) $withdrawal->amount);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Financial team withdrawal notification failed: ' . $e->getMessage());
+        }
 
         if ($request->expectsJson()) {
             return response()->json([

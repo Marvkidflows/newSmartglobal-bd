@@ -154,7 +154,11 @@ class InvestorTaskController extends Controller
             }
         }
 
-        $windowOpen = !$task->activates_at || now()->gte($task->activates_at);
+        // Deactivation blocks activation even if the window has technically
+        // opened — without this check, a fresh code submission arriving
+        // while the task sits deactivated would activate anyway, since
+        // this calculation only looked at activates_at before.
+        $windowOpen = !$task->isDeactivated() && (!$task->activates_at || now()->gte($task->activates_at));
 
         DB::transaction(function () use ($assignment, $windowOpen, $validated) {
             $from = $assignment->status;
@@ -277,6 +281,7 @@ class InvestorTaskController extends Controller
             'has_sufficient_balance' => $a->effective_required_amount === null || (float) (Auth::user()->balance ?? 0) >= $a->effective_required_amount,
             'status'             => $a->live_status,
             'is_expired'         => $a->live_status === 'expired',
+            'is_deactivated'     => $task->isDeactivated(),
             'code_confirmed'     => $a->code_confirmed_at !== null,
             'seconds_remaining'  => $task->seconds_remaining,   // counts down to expiry, once active
             'seconds_until_start'=> $a->seconds_until_start,    // counts down to window opening, pre-activation

@@ -20,6 +20,7 @@ return Application::configure(basePath: dirname(__DIR__))
         // Middleware aliases
         $middleware->alias([
             'admin'               => \App\Http\Middleware\AdminMiddleware::class,
+            'financial'           => \App\Http\Middleware\FinancialMiddleware::class,
             'investor'            => \App\Http\Middleware\InvestorMiddleware::class,
             'registration.stage'  => \App\Http\Middleware\RegistrationStageMiddleware::class,
             'check.account'       => \App\Http\Middleware\CheckAccountStatus::class,

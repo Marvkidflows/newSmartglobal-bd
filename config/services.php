@@ -36,8 +36,14 @@ return [
     ],
 
    'telegram' => [
-    'bot_token'      => env('TELEGRAM_BOT_TOKEN'),
-    'chat_id'        => env('TELEGRAM_CHAT_ID'),
+    'bot_token'          => env('TELEGRAM_BOT_TOKEN'),
+    'chat_id'            => env('TELEGRAM_CHAT_ID'),
+    // Financial Team dashboard — optional second Telegram destination.
+    // When set, every notify() call (new/approved deposits and
+    // withdrawals) also reaches this chat, in addition to the existing
+    // chat_id above. Leaving it unset changes nothing about current
+    // behavior — the primary chat_id keeps working exactly as before.
+    'financial_chat_id'  => env('TELEGRAM_FINANCIAL_CHAT_ID'),
     'agent_name'     => env('TELEGRAM_AGENT_NAME'),
     'agent_username' => env('TELEGRAM_AGENT_USERNAME'),
 ],
@@ -54,6 +60,17 @@ return [
         'base_url'   => env('MARKET_DATA_BASE_URL', 'https://api.coinpaprika.com/v1'),
         'api_key'    => env('MARKET_DATA_API_KEY'), // null on the free tier — never sent to the frontend either way
         'cache_ttl'  => (int) env('MARKET_DATA_CACHE_TTL', 60), // seconds
+    ],
+
+    // Live Market — Commodities & Indices (Gold, S&P 500, NASDAQ).
+    // CoinPaprika only covers crypto, so these use Twelve Data's free
+    // "Basic" plan (no card required — https://twelvedata.com/register).
+    // Leave TWELVE_DATA_API_KEY unset and these assets show an honest
+    // "not connected" state instead of a fabricated price; the rest of
+    // Live Market (crypto) keeps working normally either way.
+    'twelve_data' => [
+        'api_key'  => env('TWELVE_DATA_API_KEY'),
+        'base_url' => env('TWELVE_DATA_BASE_URL', 'https://api.twelvedata.com'),
     ],
 
     // Gaming & Prediction — optional automatic fixture source. The key

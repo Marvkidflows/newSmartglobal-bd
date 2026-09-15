@@ -66,23 +66,46 @@ class FootballDataService
         $this->apiKey = config('services.football_data.api_key');
     }
 
+    // Maps football-data.org's raw match status to Fixture::STATUSES.
+    // IN_PLAY/PAUSED both mean "the match is currently being played" —
+    // we don't distinguish half-time from live play at the fixture
+    // level (markets are closed the moment kickoff passes regardless).
+    // AWARDED (a very rare "result awarded without playing", e.g. a
+    // forfeit) is treated as finished so it can still be resolved with
+    // whatever score the provider supplies.
+    public const STATUS_MAP = [
+        'SCHEDULED' => 'scheduled',
+        'TIMED'     => 'scheduled',
+        'IN_PLAY'   => 'live',
+        'PAUSED'    => 'live',
+        'FINISHED'  => 'finished',
+        'AWARDED'   => 'finished',
+        'POSTPONED' => 'postponed',
+        'SUSPENDED' => 'postponed',
+        'CANCELLED' => 'cancelled',
+    ];
+
     public function isConfigured(): bool
     {
         return !empty($this->apiKey);
     }
 
     /**
-     * Fetch upcoming scheduled fixtures across whichever competitions
-     * the admin currently has enabled in the `competitions` table.
+     * Single shared fetch: every match football-data.org currently has
+     * on record for each enabled competition, unfiltered by status.
+     * Both importing new fixtures and updating existing ones read from
+     * this same result set, so a full sync never issues more than one
+     * HTTP request per enabled competition.
      *
-     * @return array{ok: bool, fixtures: array, error: ?string}
+     * @return array{ok: bool, matches: array, competitions_checked: int, error: ?string}
      */
-    public function fetchUpcomingFixtures(): array
+    public function fetchAllMatches(): array
     {
         if (!$this->isConfigured()) {
             return [
                 'ok' => false,
-                'fixtures' => [],
+                'matches' => [],
+                'competitions_checked' => 0,
                 'error' => 'No football-data.org API key is configured. Add FOOTBALL_DATA_API_KEY to .env, or continue using manual fixture entry.',
             ];
         }
@@ -92,7 +115,8 @@ class FootballDataService
         if ($enabled->isEmpty()) {
             return [
                 'ok' => false,
-                'fixtures' => [],
+                'matches' => [],
+                'competitions_checked' => 0,
                 'error' => 'No competitions are enabled. Enable at least one competition below, then fetch again.',
             ];
         }
@@ -112,11 +136,22 @@ class FootballDataService
         // whether the app is running locally vs. deployed. A deployed
         // server usually has a faster, more direct route to the
         // provider than a home/office connection does.
-        if (function_exists('set_time_limit')) {
+        // Only relevant to a web request: PHP-FPM/Apache's own
+        // max_execution_time (commonly 30s) would otherwise kill an
+        // admin's "Sync Now" click partway through a multi-league fetch.
+        // In a console context (the scheduled command, or `php artisan
+        // gaming:sync-fixtures` run by hand) PHP's CLI SAPI already
+        // defaults max_execution_time to unlimited — imposing a 120s cap
+        // there does the opposite of what's intended and can kill an
+        // otherwise-healthy sync partway through, mid-database-write,
+        // once enough fixtures have accumulated to process. Consecutive
+        // legitimately concurrent runs are separately guarded against by
+        // FixtureSyncService's cache lock, not by a time limit here.
+        if (!app()->runningInConsole() && function_exists('set_time_limit')) {
             @set_time_limit(120);
         }
 
-        $fixtures = [];
+        $matches = [];
         $errors = [];
 
         $responses = Http::pool(fn ($pool) => $enabled->map(
@@ -150,28 +185,59 @@ class FootballDataService
                 continue;
             }
 
-            $matches = $response->json('matches') ?? [];
-
-            foreach ($matches as $m) {
-                // Only fixtures that haven't kicked off yet are worth
-                // reviewing for prediction purposes.
-                if (!in_array($m['status'] ?? '', ['SCHEDULED', 'TIMED'])) continue;
-
-                $fixtures[] = [
-                    'external_id' => (string) ($m['id'] ?? ''),
-                    'league'      => $league,
-                    'home_team'   => $m['homeTeam']['name'] ?? 'TBD',
-                    'away_team'   => $m['awayTeam']['name'] ?? 'TBD',
-                    'kickoff_at'  => $m['utcDate'] ?? null,
+            foreach (($response->json('matches') ?? []) as $m) {
+                $rawStatus = $m['status'] ?? '';
+                $matches[] = [
+                    'external_id'     => (string) ($m['id'] ?? ''),
+                    'league'          => $league,
+                    'home_team'       => $m['homeTeam']['name'] ?? 'TBD',
+                    'away_team'       => $m['awayTeam']['name'] ?? 'TBD',
+                    'kickoff_at'      => $m['utcDate'] ?? null,
+                    'provider_status' => $rawStatus,
+                    'status'          => self::STATUS_MAP[$rawStatus] ?? null,
+                    'home_score'      => $m['score']['fullTime']['home'] ?? null,
+                    'away_score'      => $m['score']['fullTime']['away'] ?? null,
                 ];
             }
         }
 
-        if (empty($fixtures) && !empty($errors)) {
-            return ['ok' => false, 'fixtures' => [], 'error' => implode(' ', $errors)];
+        if (empty($matches) && !empty($errors)) {
+            return ['ok' => false, 'matches' => [], 'competitions_checked' => $enabled->count(), 'error' => implode(' ', $errors)];
         }
 
-        return ['ok' => true, 'fixtures' => $fixtures, 'error' => empty($errors) ? null : implode(' ', $errors)];
+        return [
+            'ok' => true,
+            'matches' => $matches,
+            'competitions_checked' => $enabled->count(),
+            'error' => empty($errors) ? null : implode(' ', $errors),
+        ];
+    }
+
+    /**
+     * Fetch upcoming scheduled fixtures across whichever competitions
+     * the admin currently has enabled in the `competitions` table.
+     * Thin filter over fetchAllMatches() — kept as its own method since
+     * "fixtures worth importing" (not yet kicked off) is a narrower
+     * question than "everything the provider knows about".
+     *
+     * @return array{ok: bool, fixtures: array, error: ?string}
+     */
+    public function fetchUpcomingFixtures(): array
+    {
+        $result = $this->fetchAllMatches();
+
+        $fixtures = array_values(array_filter(array_map(function ($m) {
+            if (!in_array($m['provider_status'], ['SCHEDULED', 'TIMED'])) return null;
+            return [
+                'external_id' => $m['external_id'],
+                'league'      => $m['league'],
+                'home_team'   => $m['home_team'],
+                'away_team'   => $m['away_team'],
+                'kickoff_at'  => $m['kickoff_at'],
+            ];
+        }, $result['matches'])));
+
+        return ['ok' => $result['ok'], 'fixtures' => $fixtures, 'error' => $result['error']];
     }
 
     /**
@@ -182,5 +248,68 @@ class FootballDataService
     public static function catalogNames(): array
     {
         return array_column(self::CATALOG, 'name');
+    }
+
+    /**
+     * Refresh the `competitions` table from football-data.org's own
+     * /v4/competitions list, per the "prefer retrieving available
+     * competitions from the provider over a hardcoded list" requirement.
+     * Existing rows (matched by provider_code) keep their current
+     * is_enabled state and sort_order untouched — this only adds
+     * competitions the provider newly exposes (disabled by default,
+     * same convention as the initial seed) and refreshes display names.
+     * Never removes a competition an admin may have fixtures against.
+     *
+     * @return array{ok: bool, added: int, updated: int, error: ?string}
+     */
+    public function syncCompetitionsFromProvider(): array
+    {
+        if (!$this->isConfigured()) {
+            return ['ok' => false, 'added' => 0, 'updated' => 0, 'error' => 'No football-data.org API key is configured.'];
+        }
+
+        try {
+            $response = Http::withHeaders(['X-Auth-Token' => $this->apiKey])
+                ->timeout(15)
+                ->get("{$this->baseUrl}/competitions");
+        } catch (\Throwable $e) {
+            Log::warning('FootballDataService competitions sync failed', ['error' => $e->getMessage()]);
+            return ['ok' => false, 'added' => 0, 'updated' => 0, 'error' => 'Could not reach football-data.org.'];
+        }
+
+        if (!$response->successful()) {
+            return ['ok' => false, 'added' => 0, 'updated' => 0, 'error' => "Could not fetch competitions (HTTP {$response->status()})."];
+        }
+
+        $provided = collect($response->json('competitions') ?? [])
+            // Free tier only ever has access to TIER_ONE competitions —
+            // filtering here avoids seeding leagues the configured key
+            // can never actually fetch matches for.
+            ->filter(fn ($c) => ($c['plan'] ?? null) === 'TIER_ONE' && !empty($c['code']));
+
+        $added = 0;
+        $updated = 0;
+        $maxSort = Competition::max('sort_order') ?? 0;
+
+        foreach ($provided as $c) {
+            $existing = Competition::where('provider_code', $c['code'])->first();
+            if ($existing) {
+                if ($existing->name !== $c['name']) {
+                    $existing->update(['name' => $c['name']]);
+                    $updated++;
+                }
+                continue;
+            }
+
+            Competition::create([
+                'name'          => $c['name'],
+                'provider_code' => $c['code'],
+                'is_enabled'    => false, // present, not silently active — same convention as the initial seed
+                'sort_order'    => ++$maxSort,
+            ]);
+            $added++;
+        }
+
+        return ['ok' => true, 'added' => $added, 'updated' => $updated, 'error' => null];
     }
 }

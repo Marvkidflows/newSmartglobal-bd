@@ -26,9 +26,14 @@ class InvestorFixtureController extends Controller
             ->whereHas('fixture', fn ($q) => $q->where('kickoff_at', '<=', now())->where('status', 'scheduled'))
             ->update(['status' => 'closed']);
 
+        // "Upcoming" also includes live and postponed fixtures — not just
+        // strictly-future scheduled ones — so a fixture an investor is
+        // watching doesn't simply vanish the moment automatic sync marks
+        // it postponed or in progress. Prediction eligibility itself is
+        // still enforced separately in predict() below regardless of what
+        // shows up here.
         $upcoming = Fixture::published()
-            ->where('status', 'scheduled')
-            ->where('kickoff_at', '>', now())
+            ->whereIn('status', ['scheduled', 'live', 'postponed'])
             ->with(['markets' => fn ($q) => $q->with(['predictions' => fn ($p) => $p->where('user_id', $userId)])])
             ->orderBy('kickoff_at')
             ->get();

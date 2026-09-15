@@ -70,6 +70,7 @@ Route::post('/reset-password', [PasswordResetController::class, 'resetPassword']
 |--------------------------------------------------------------------------
 */
 Route::middleware('throttle:60,1')->prefix('market')->name('market.')->group(function () {
+    Route::get('/overview',      [\App\Http\Controllers\MarketController::class, 'overview'])->name('overview');
     Route::get('/assets',        [\App\Http\Controllers\MarketController::class, 'index'])->name('assets.index');
     Route::get('/assets/{asset}',[\App\Http\Controllers\MarketController::class, 'show'])->name('assets.show');
 });
@@ -407,6 +408,8 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         Route::post('/tasks/{taskAssignment}/complete', [AdminTaskController::class, 'complete'])->name('tasks.complete');
         Route::post('/tasks/{taskAssignment}/close',    [AdminTaskController::class, 'close'])->name('tasks.close');
         Route::post('/tasks/{taskAssignment}/close-task', [AdminTaskController::class, 'closeTask'])->name('tasks.close-task');
+        Route::post('/tasks/{taskAssignment}/deactivate-task', [AdminTaskController::class, 'deactivateTask'])->name('tasks.deactivate-task');
+        Route::post('/tasks/{taskAssignment}/resume-task',     [AdminTaskController::class, 'resumeTask'])->name('tasks.resume-task');
 
         Route::get('/task-types',                    [AdminTaskTypeController::class, 'index'])->name('task-types.index');
         Route::post('/task-types',                    [AdminTaskTypeController::class, 'store'])->name('task-types.store');
@@ -430,15 +433,22 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         | GAMING & PREDICTION — FINAL SPEC (sports fixtures), admin side
         |----------------------------------------------------------------------
         */
+        Route::get('/fixtures/overview',                 [\App\Http\Controllers\Admin\AdminFixtureController::class, 'overview'])->name('fixtures.overview');
+        Route::get('/fixtures/sync-status',               [\App\Http\Controllers\Admin\AdminFixtureController::class, 'syncStatus'])->name('fixtures.sync-status');
+        Route::post('/fixtures/bulk-publish',             [\App\Http\Controllers\Admin\AdminFixtureController::class, 'bulkPublish'])->name('fixtures.bulk-publish');
         Route::get('/fixtures',                          [\App\Http\Controllers\Admin\AdminFixtureController::class, 'index'])->name('fixtures.index');
         Route::post('/fixtures',                          [\App\Http\Controllers\Admin\AdminFixtureController::class, 'store'])->name('fixtures.store');
         Route::post('/fixtures/fetch-api',                [\App\Http\Controllers\Admin\AdminFixtureController::class, 'fetchFromApi'])->name('fixtures.fetch-api');
+        Route::patch('/fixtures/{fixture}',               [\App\Http\Controllers\Admin\AdminFixtureController::class, 'update'])->name('fixtures.update');
+        Route::get('/fixtures/{fixture}/predictions',     [\App\Http\Controllers\Admin\AdminFixtureController::class, 'predictions'])->name('fixtures.predictions');
         Route::patch('/fixtures/{fixture}/publish',       [\App\Http\Controllers\Admin\AdminFixtureController::class, 'publish'])->name('fixtures.publish');
         Route::patch('/fixtures/{fixture}/unpublish',     [\App\Http\Controllers\Admin\AdminFixtureController::class, 'unpublish'])->name('fixtures.unpublish');
         Route::delete('/fixtures/{fixture}',              [\App\Http\Controllers\Admin\AdminFixtureController::class, 'destroy'])->name('fixtures.destroy');
         Route::post('/fixtures/{fixture}/markets',        [\App\Http\Controllers\Admin\AdminFixtureController::class, 'addMarket'])->name('fixtures.markets.store');
         Route::delete('/fixtures/{fixture}/markets/{market}', [\App\Http\Controllers\Admin\AdminFixtureController::class, 'removeMarket'])->name('fixtures.markets.destroy');
         Route::patch('/fixtures/{fixture}/cancel',        [\App\Http\Controllers\Admin\AdminFixtureController::class, 'cancel'])->name('fixtures.cancel');
+        Route::patch('/fixtures/{fixture}/postpone',      [\App\Http\Controllers\Admin\AdminFixtureController::class, 'postpone'])->name('fixtures.postpone');
+        Route::patch('/fixtures/{fixture}/reinstate',     [\App\Http\Controllers\Admin\AdminFixtureController::class, 'reinstate'])->name('fixtures.reinstate');
         Route::patch('/fixtures/{fixture}/resolve',       [\App\Http\Controllers\Admin\AdminFixtureController::class, 'resolve'])->name('fixtures.resolve');
 
         /*
@@ -450,6 +460,67 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         */
         Route::get('/competitions',                      [\App\Http\Controllers\Admin\AdminCompetitionController::class, 'index'])->name('competitions.index');
         Route::patch('/competitions/{competition}/toggle',[\App\Http\Controllers\Admin\AdminCompetitionController::class, 'toggle'])->name('competitions.toggle');
+        Route::post('/competitions/sync-provider',        [\App\Http\Controllers\Admin\AdminCompetitionController::class, 'syncFromProvider'])->name('competitions.sync-provider');
+    });
+
+    /*
+    |----------------------------------------------------------------------
+    | FINANCIAL TEAM ROUTES
+    |----------------------------------------------------------------------
+    | Deliberately reuses the same controllers as the admin group above
+    | (AdminDepositController, AdminWithdrawalController, etc.) rather
+    | than duplicating approval/rejection business logic — the financial
+    | team performs the exact same deposit/withdrawal actions an admin
+    | would, just reached through a narrower, financial-only route group.
+    | FinancialMiddleware is what actually keeps this narrow: it accepts
+    | role === 'financial' OR 'admin', and nothing in this group touches
+    | admin account management, platform settings, or anything outside
+    | deposits/withdrawals/investments/dashboard stats.
+    */
+    Route::middleware('financial')
+        ->prefix('financial')
+        ->name('financial.')
+        ->group(function () {
+
+        Route::get('/dashboard', [AdminDashboardController::class, 'dashboard'])
+            ->name('dashboard');
+
+        // Deposits — full review/approve/reject/hold workflow, identical
+        // to the admin one since it's literally the same controller.
+        Route::get('/deposits',                    [AdminDepositController::class, 'index'])->name('deposits.index');
+        Route::get('/deposits/{deposit}',          [AdminDepositController::class, 'show'])->name('deposits.show');
+        Route::post('/deposits/{deposit}/approve', [AdminDepositController::class, 'approve'])->name('deposits.approve');
+        Route::post('/deposits/{deposit}/reject',  [AdminDepositController::class, 'reject'])->name('deposits.reject');
+        Route::post('/deposits/{deposit}/hold',    [AdminDepositController::class, 'hold'])->name('deposits.hold');
+        Route::post('/deposits/{deposit}/notes',   [AdminDepositController::class, 'addNote'])->name('deposits.notes');
+
+        // Withdrawals — same reasoning as deposits above.
+        Route::get('/withdrawals',                       [AdminWithdrawalController::class, 'index'])->name('withdrawals.index');
+        Route::get('/withdrawals/{withdrawal}',          [AdminWithdrawalController::class, 'show'])->name('withdrawals.show');
+        Route::post('/withdrawals/{withdrawal}/approve', [AdminWithdrawalController::class, 'approve'])->name('withdrawals.approve');
+        Route::post('/withdrawals/{withdrawal}/reject',  [AdminWithdrawalController::class, 'reject'])->name('withdrawals.reject');
+        Route::post('/withdrawals/{withdrawal}/hold',    [AdminWithdrawalController::class, 'hold'])->name('withdrawals.hold');
+        Route::post('/withdrawals/{withdrawal}/notes',   [AdminWithdrawalController::class, 'addNote'])->name('withdrawals.notes');
+
+        // Investment records — read-only. The countdown-manipulation
+        // endpoints (extend/reduce/override/complete) stay admin-only;
+        // reviewing investment-related financial records doesn't require
+        // being able to alter an investor's investment terms.
+        Route::get('/investments',              [AdminInvestmentController::class, 'index'])->name('investments.index');
+        Route::get('/investments/{investment}', [AdminInvestmentController::class, 'show'])->name('investments.show');
+
+        // Notifications — the exact same controller/table investors use
+        // (Auth::user()->notifications()), just reached from here. New
+        // deposit/withdrawal notifications are pushed to financial+admin
+        // users the same way (see FinancialNotificationService).
+        Route::get('/notifications',                      [NotificationController::class, 'index'])->name('notifications.index');
+        Route::post('/notifications/{notification}/read', [NotificationController::class, 'markAsRead'])->name('notifications.read');
+        Route::delete('/notifications/{notification}',    [NotificationController::class, 'destroy'])->name('notifications.destroy');
+
+        // Profile — own account only, no route parameter, so there's no
+        // way to target anyone else's user record through this.
+        Route::get('/profile',           [\App\Http\Controllers\Financial\FinancialProfileController::class, 'show'])->name('profile.show');
+        Route::post('/profile/password', [\App\Http\Controllers\Financial\FinancialProfileController::class, 'changePassword'])->name('profile.password');
     });
 
     Route::get('/notifications/mark-all-read', function (Request $request) {

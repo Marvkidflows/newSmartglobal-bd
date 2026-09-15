@@ -22,7 +22,7 @@ class TaskAssignment extends Model
         'task_id', 'user_id', 'status', 'activated_at', 'code_confirmed_at', 'required_amount',
         'submitted_amount', 'submitted_at', 'submitted_notes',
         'amount_used', 'amount_received', 'profit_loss', 'result_notes', 'final_result',
-        'verified_by', 'verified_at', 'completed_at', 'closed_at',
+        'verified_by', 'verified_at', 'completed_at', 'closed_at', 'balance_applied_at',
     ];
 
     protected $casts = [
@@ -37,6 +37,7 @@ class TaskAssignment extends Model
         'verified_at'       => 'datetime',
         'completed_at'      => 'datetime',
         'closed_at'         => 'datetime',
+        'balance_applied_at' => 'datetime',
     ];
 
     public function task() { return $this->belongsTo(Task::class); }
@@ -73,6 +74,15 @@ class TaskAssignment extends Model
             && $this->task
             && $this->task->live_status === 'expired') {
             return 'expired';
+        }
+        // Mirror the parent task's deactivated state for display — the
+        // stored status underneath stays whatever it was (usually
+        // 'awaiting_activation'), same reasoning as Task::live_status.
+        if (!in_array($this->status, self::TERMINAL_STATUSES, true)
+            && $this->relationLoaded('task')
+            && $this->task
+            && $this->task->isDeactivated()) {
+            return 'deactivated';
         }
         return $this->status;
     }
@@ -115,7 +125,10 @@ class TaskAssignment extends Model
         if ($this->status !== 'awaiting_activation' || !$this->code_confirmed_at) {
             return false;
         }
-        if (!$this->task || !$this->task->activates_at || Carbon::now()->lt($this->task->activates_at)) {
+        if (!$this->task || $this->task->isDeactivated()) {
+            return false;
+        }
+        if (!$this->task->activates_at || Carbon::now()->lt($this->task->activates_at)) {
             return false;
         }
 
@@ -140,6 +153,10 @@ class TaskAssignment extends Model
     public function getSecondsUntilStartAttribute(): ?int
     {
         if (!$this->task || !$this->task->activates_at) return null;
+        // While deactivated, there's nothing counting down — the window
+        // is paused, not just delayed, so showing a live number here
+        // would contradict the "Deactivated" status right next to it.
+        if ($this->task->isDeactivated()) return null;
         if (Carbon::now()->gte($this->task->activates_at)) return null;
         return max(0, (int) Carbon::now()->diffInSeconds($this->task->activates_at, false));
     }

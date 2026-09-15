@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Deposit;
 use App\Models\InvestmentPlan;
 use App\Services\TelegramService;
+use App\Services\FinancialNotificationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Str;
@@ -14,10 +15,12 @@ use Illuminate\Support\Str;
 class InvestorDepositController extends Controller
 {
     protected TelegramService $telegram;
+    protected FinancialNotificationService $financialNotifier;
 
-    public function __construct(TelegramService $telegram)
+    public function __construct(TelegramService $telegram, FinancialNotificationService $financialNotifier)
     {
-        $this->telegram = $telegram;
+        $this->telegram          = $telegram;
+        $this->financialNotifier = $financialNotifier;
     }
 
     // GET /investor-investment/investor/deposits
@@ -106,6 +109,18 @@ $name = $user->name
 
 $agent = $this->getAgent($name, (float) $deposit->amount, $reference);
 $this->telegram->newDeposit($name, (float) $deposit->amount, $reference);
+
+// In-app Financial Team alert. Unlike TelegramService::notify(), this
+// has no internal try/catch, so a failure here (e.g. notifications
+// table not migrated yet on this environment) must never be allowed
+// to turn an otherwise-successful deposit into a 500 for the investor
+// — the deposit row above is already committed by this point.
+try {
+    $this->financialNotifier->newDeposit($deposit->id, $name, (float) $deposit->amount);
+} catch (\Throwable $e) {
+    \Illuminate\Support\Facades\Log::warning('Financial team deposit notification failed: ' . $e->getMessage());
+}
+
         return response()->json([
             'deposit_id' => $deposit->id,
             'reference'  => $reference,

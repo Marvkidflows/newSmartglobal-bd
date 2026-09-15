@@ -45,4 +45,26 @@ class AdminCompetitionController extends Controller
             'competition' => $competition,
         ]);
     }
+
+    // POST /admin/competitions/sync-provider
+    // Refreshes the competition catalog from football-data.org's own
+    // /v4/competitions list rather than relying solely on the hardcoded
+    // CATALOG seed — see FootballDataService::syncCompetitionsFromProvider().
+    // Never disables/removes an existing competition; only adds ones the
+    // provider newly exposes (disabled by default) or refreshes a name.
+    public function syncFromProvider(FootballDataService $footballData)
+    {
+        $result = $footballData->syncCompetitionsFromProvider();
+
+        if (!$result['ok']) {
+            return response()->json(['message' => $result['error']], 422);
+        }
+
+        return response()->json([
+            'message'      => "Competition catalog synced — {$result['added']} added, {$result['updated']} updated.",
+            'added'        => $result['added'],
+            'updated'      => $result['updated'],
+            'competitions' => Competition::orderBy('sort_order')->get(),
+        ]);
+    }
 }

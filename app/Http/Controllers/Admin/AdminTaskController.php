@@ -19,9 +19,11 @@ use App\Models\Task;
 use App\Models\TaskAssignment;
 use App\Models\TaskType;
 use App\Models\User;
+use App\Models\BalanceAdjustment;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 use Carbon\Carbon;
 use App\Notifications\TaskAssignedNotification;
 use App\Notifications\TaskActivatedNotification;
@@ -180,6 +182,21 @@ class AdminTaskController extends Controller
             'requirements'     => ['nullable', 'string'],
             'required_amount'  => ['nullable', 'numeric', 'min:0'],
             'task_type_id'     => ['sometimes', 'exists:task_types,id'],
+            // Activation time — spec §6: editing this becomes the new
+            // authoritative activation moment immediately. Anyone still
+            // 'awaiting_activation' picks up the new countdown on their
+            // next read; anyone already active/beyond is unaffected,
+            // since syncStart() only ever transitions FROM
+            // awaiting_activation — there's nothing to retroactively undo.
+            'activates_at'     => ['sometimes', 'nullable', 'date'],
+            // Task code — spec §4 "Change task code where appropriate".
+            // Gated by the same $anyProgressed check above as everything
+            // else in this method, so a code can't be pulled out from
+            // under an investor who's already submitted it.
+            'task_code'        => [
+                'sometimes', 'string', 'max:50', 'alpha_dash',
+                Rule::unique('shared_tasks', 'task_code')->ignore($task->id),
+            ],
         ]);
 
         $task->update($validated);
@@ -446,6 +463,80 @@ class AdminTaskController extends Controller
         return response()->json(['message' => 'Task closed for all assigned investors.', 'task' => $this->formatAssignment($taskAssignment->fresh())]);
     }
 
+    // POST /admin/tasks/{taskAssignment}/deactivate-task — pauses the
+    // WHOLE shared task for every assigned investor at once (spec §5:
+    // "Deactivate task"). This is what actually sets the task-level
+    // deactivated_at flag that syncStart()/submitCode() check — the
+    // older per-assignment deactivate() below only ever flipped one
+    // investor's status back to awaiting_activation, which did nothing
+    // to stop the window itself from being considered "open" the next
+    // time anything re-evaluated it.
+    public function deactivateTask(Request $request, TaskAssignment $taskAssignment)
+    {
+        $task = $taskAssignment->task;
+        $task->syncExpiry();
+
+        if (in_array($task->status, ['expired', 'cancelled', 'closed'], true)) {
+            return response()->json(['message' => 'This task has already reached a final state and cannot be deactivated.'], 422);
+        }
+        if ($task->isDeactivated()) {
+            return response()->json(['message' => 'This task is already deactivated.'], 422);
+        }
+
+        $validated = $request->validate(['reason' => ['nullable', 'string', 'max:255']]);
+
+        $task->update([
+            'deactivated_at'       => now(),
+            'deactivated_by'       => Auth::id(),
+            'deactivation_reason'  => $validated['reason'] ?? null,
+        ]);
+
+        $task->logs()->create([
+            'actor_id' => Auth::id(), 'actor_type' => 'admin', 'action' => 'task_deactivated',
+            'meta' => ['reason' => $validated['reason'] ?? null],
+        ]);
+
+        $this->notifyAllAssignees($task, "Your task \"{$task->title}\" has been paused by the admin team.");
+
+        return response()->json(['message' => 'Task deactivated for all assigned investors.', 'task' => $this->formatAssignment($taskAssignment->fresh())]);
+    }
+
+    // POST /admin/tasks/{taskAssignment}/resume-task — spec §5: "Resume/
+    // reactivate task". Deliberately does NOT force any assignment
+    // straight to 'active' — it just lifts the pause. Whoever's
+    // activation window has already passed gets promoted on their very
+    // next read via TaskAssignment::syncStart() (the exact same lazy
+    // check used everywhere else), so this can never "accidentally
+    // activate an expired or invalid task" per spec §5 — it's the same
+    // activation rules either way, just no longer blocked by the flag.
+    public function resumeTask(Request $request, TaskAssignment $taskAssignment)
+    {
+        $task = $taskAssignment->task;
+        $task->syncExpiry();
+
+        if (!$task->isDeactivated()) {
+            return response()->json(['message' => 'This task is not currently deactivated.'], 422);
+        }
+        if (in_array($task->status, ['expired', 'cancelled', 'closed'], true)) {
+            return response()->json(['message' => 'This task has reached a final state and cannot be resumed.'], 422);
+        }
+
+        $task->update(['deactivated_at' => null, 'deactivated_by' => null, 'deactivation_reason' => null]);
+
+        $task->logs()->create([
+            'actor_id' => Auth::id(), 'actor_type' => 'admin', 'action' => 'task_resumed',
+        ]);
+
+        // Lazily promote anyone whose window already opened while the
+        // task sat paused — same rules syncStart() always applies, just
+        // run immediately instead of waiting for the next unrelated read.
+        $task->assignments()->get()->each(fn (TaskAssignment $a) => $a->syncStart());
+
+        $this->notifyAllAssignees($task, "Your task \"{$task->title}\" has been resumed.");
+
+        return response()->json(['message' => 'Task resumed for all assigned investors.', 'task' => $this->formatAssignment($taskAssignment->fresh())]);
+    }
+
     // GET /admin/tasks/{taskAssignment}/logs — merged task-level +
     // assignment-level timeline.
     public function logs(TaskAssignment $taskAssignment)
@@ -519,24 +610,101 @@ class AdminTaskController extends Controller
         return response()->json(['message' => 'Result recorded and verified.', 'task' => $this->formatAssignment($taskAssignment->fresh())]);
     }
 
+    // POST /admin/tasks/{taskAssignment}/complete
+    //
+    // The one place a task's result actually reaches the investor's
+    // wallet. Everything up to this point (verify()) only records the
+    // numbers on the assignment row — nothing was ever credited or
+    // debited. This requires a profit_loss figure to already be on the
+    // record (typically set via verify() first, matching the admin UI's
+    // "fill in the result, then Complete" flow) and applies it exactly
+    // once: positive → credit, negative → debit, logged as a
+    // BalanceAdjustment identically to how deposit/withdrawal approval
+    // already does it, so it shows up in the same balance history.
+    //
+    // A loss is deducted even if it takes the balance negative — this is
+    // recording what the admin has verified actually happened on funds
+    // the investor already committed elsewhere, not a withdrawal the
+    // investor is requesting, so there's no "insufficient balance" case
+    // to guard against here the way there is for withdrawals.
     public function complete(Request $request, TaskAssignment $taskAssignment)
     {
         if (!in_array($taskAssignment->status, ['submitted', 'under_review'], true)) {
             return response()->json(['message' => 'Only a submitted or under-review assignment can be completed.'], 422);
         }
 
+        // Allow the admin to set-and-complete in one step too, not just
+        // via a prior verify() call — same fields, same validation.
+        $validated = $request->validate([
+            'amount_used'     => ['nullable', 'numeric'],
+            'amount_received' => ['nullable', 'numeric'],
+            'profit_loss'     => ['nullable', 'numeric'],
+            'final_result'    => ['nullable', 'string', 'max:100'],
+            'result_notes'    => ['nullable', 'string'],
+        ]);
+
+        $profitLoss = $validated['profit_loss'] ?? $taskAssignment->profit_loss;
+
+        if ($profitLoss === null) {
+            return response()->json(['message' => 'Enter a profit/loss amount (via Verify or here) before completing — this is what gets applied to the investor\'s balance.'], 422);
+        }
+
         $from = $taskAssignment->status;
-        $taskAssignment->update(['status' => 'completed', 'completed_at' => now()]);
+
+        DB::transaction(function () use ($request, $taskAssignment, $validated, $profitLoss) {
+            $taskAssignment->update([
+                'amount_used'     => $validated['amount_used']     ?? $taskAssignment->amount_used,
+                'amount_received' => $validated['amount_received'] ?? $taskAssignment->amount_received,
+                'profit_loss'     => $profitLoss,
+                'final_result'    => $validated['final_result']    ?? $taskAssignment->final_result,
+                'result_notes'    => $validated['result_notes']    ?? $taskAssignment->result_notes,
+                'status'          => 'completed',
+                'completed_at'    => now(),
+            ]);
+
+            // Idempotency guard: even though 'completed' is a terminal
+            // status with no exposed route back out of it, this makes it
+            // structurally impossible to double-apply the same result
+            // to the balance regardless of how this method is reached.
+            if ($taskAssignment->balance_applied_at === null && (float) $profitLoss != 0.0) {
+                $user = $taskAssignment->user()->lockForUpdate()->first();
+
+                if ($user) {
+                    $balanceBefore = (float) ($user->balance ?? 0);
+
+                    if ($profitLoss > 0) {
+                        $user->increment('balance', $profitLoss);
+                    } else {
+                        $user->decrement('balance', abs($profitLoss));
+                    }
+
+                    $balanceAfter = (float) $user->fresh()->balance;
+
+                    BalanceAdjustment::create([
+                        'user_id'        => $user->id,
+                        'admin_id'       => $request->user()->id,
+                        'type'           => $profitLoss > 0 ? 'add' : 'deduct',
+                        'amount'         => abs($profitLoss),
+                        'balance_before' => $balanceBefore,
+                        'balance_after'  => $balanceAfter,
+                        'reason'         => "Task {$taskAssignment->task->task_code} result: " . ($profitLoss > 0 ? 'profit' : 'loss') . ' credited to balance',
+                    ]);
+                }
+            }
+
+            $taskAssignment->update(['balance_applied_at' => now()]);
+        });
 
         $taskAssignment->logs()->create([
             'task_id' => $taskAssignment->task_id,
             'actor_id' => Auth::id(), 'actor_type' => 'admin', 'action' => 'completed',
             'from_status' => $from, 'to_status' => 'completed',
+            'meta' => ['profit_loss' => $profitLoss],
         ]);
 
-        $taskAssignment->user?->notify(new TaskCompletedNotification($taskAssignment));
+        $taskAssignment->user?->notify(new TaskCompletedNotification($taskAssignment->fresh()));
 
-        return response()->json(['message' => 'Marked as completed for this investor.', 'task' => $this->formatAssignment($taskAssignment->fresh())]);
+        return response()->json(['message' => 'Task completed — balance updated.', 'task' => $this->formatAssignment($taskAssignment->fresh())]);
     }
 
     // POST /admin/tasks/{taskAssignment}/close — finalizes just THIS
@@ -574,6 +742,9 @@ class AdminTaskController extends Controller
             'has_amount_override' => $a->required_amount !== null,
             'status'            => $a->live_status,
             'is_expired'        => $a->live_status === 'expired',
+            'is_deactivated'    => $task->isDeactivated(),
+            'deactivated_at'    => optional($task->deactivated_at)->toISOString(),
+            'deactivation_reason' => $task->deactivation_reason,
             'seconds_remaining' => $task->seconds_remaining,
             'code_confirmed'    => $a->code_confirmed_at !== null,
             'seconds_until_start' => $a->seconds_until_start,
@@ -582,6 +753,7 @@ class AdminTaskController extends Controller
             'activated_at'      => optional($a->activated_at)->toISOString(),
             'submitted_at'      => optional($a->submitted_at)->toISOString(),
             'completed_at'      => optional($a->completed_at)->toISOString(),
+            'balance_applied_at' => optional($a->balance_applied_at)->toISOString(),
             'closed_at'         => optional($a->closed_at)->toISOString(),
             'created_at'        => $a->created_at->toISOString(),
             'task_type'         => [

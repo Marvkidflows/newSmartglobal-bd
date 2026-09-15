@@ -23,7 +23,7 @@ return new class extends Migration
             $table->string('password');
 
             // ── Role & Status ─────────────────────────────────────────────
-            $table->enum('role', ['admin', 'investor'])->default('investor');
+            $table->enum('role', ['admin', 'investor', 'financial'])->default('investor');
             $table->enum('status', ['active', 'suspended', 'inactive'])->default('active');
 
             // ── Contact Info ──────────────────────────────────────────────

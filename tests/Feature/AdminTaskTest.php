@@ -294,6 +294,81 @@ class AdminTaskTest extends TestCase
         $this->assertDatabaseHas('task_assignments', ['id' => $assignment->id, 'status' => 'completed']);
     }
 
+    public function test_completing_a_profitable_task_credits_the_investors_balance(): void
+    {
+        $this->investor->update(['balance' => 1000]);
+        $assignment = $this->createTaskWithAssignment(['assignment_status' => 'submitted']);
+
+        $this->actingAs($this->admin, 'sanctum')->postJson("/api/admin/tasks/{$assignment->id}/verify", [
+            'profit_loss' => 135, 'final_result' => 'profit',
+        ])->assertStatus(200);
+
+        $response = $this->actingAs($this->admin, 'sanctum')->postJson("/api/admin/tasks/{$assignment->id}/complete");
+
+        $response->assertStatus(200);
+        $this->assertEquals(1135.00, (float) $this->investor->fresh()->balance);
+        $this->assertDatabaseHas('balance_adjustments', [
+            'user_id' => $this->investor->id, 'type' => 'add', 'amount' => 135,
+            'balance_before' => 1000, 'balance_after' => 1135,
+        ]);
+        $this->assertNotNull($assignment->fresh()->balance_applied_at);
+    }
+
+    public function test_completing_a_losing_task_deducts_from_the_investors_balance(): void
+    {
+        $this->investor->update(['balance' => 1000]);
+        $assignment = $this->createTaskWithAssignment(['assignment_status' => 'submitted']);
+
+        $this->actingAs($this->admin, 'sanctum')->postJson("/api/admin/tasks/{$assignment->id}/verify", [
+            'profit_loss' => -200, 'final_result' => 'loss',
+        ])->assertStatus(200);
+
+        $this->actingAs($this->admin, 'sanctum')->postJson("/api/admin/tasks/{$assignment->id}/complete")->assertStatus(200);
+
+        $this->assertEquals(800.00, (float) $this->investor->fresh()->balance);
+        $this->assertDatabaseHas('balance_adjustments', [
+            'user_id' => $this->investor->id, 'type' => 'deduct', 'amount' => 200,
+            'balance_before' => 1000, 'balance_after' => 800,
+        ]);
+    }
+
+    public function test_completing_without_a_profit_loss_value_is_rejected(): void
+    {
+        $assignment = $this->createTaskWithAssignment(['assignment_status' => 'submitted']);
+
+        $response = $this->actingAs($this->admin, 'sanctum')->postJson("/api/admin/tasks/{$assignment->id}/complete");
+
+        $response->assertStatus(422);
+        $this->assertNull($assignment->fresh()->completed_at);
+    }
+
+    public function test_complete_can_set_profit_loss_directly_without_a_prior_verify_call(): void
+    {
+        $this->investor->update(['balance' => 500]);
+        $assignment = $this->createTaskWithAssignment(['assignment_status' => 'submitted']);
+
+        $response = $this->actingAs($this->admin, 'sanctum')->postJson("/api/admin/tasks/{$assignment->id}/complete", [
+            'profit_loss' => 50, 'final_result' => 'profit',
+        ]);
+
+        $response->assertStatus(200);
+        $this->assertEquals(550.00, (float) $this->investor->fresh()->balance);
+    }
+
+    public function test_completing_a_zero_profit_loss_task_applies_no_balance_change(): void
+    {
+        $this->investor->update(['balance' => 500]);
+        $assignment = $this->createTaskWithAssignment(['assignment_status' => 'submitted']);
+
+        $this->actingAs($this->admin, 'sanctum')->postJson("/api/admin/tasks/{$assignment->id}/complete", [
+            'profit_loss' => 0, 'final_result' => 'breakeven',
+        ])->assertStatus(200);
+
+        $this->assertEquals(500.00, (float) $this->investor->fresh()->balance);
+        $this->assertDatabaseMissing('balance_adjustments', ['user_id' => $this->investor->id]);
+        $this->assertNotNull($assignment->fresh()->balance_applied_at);
+    }
+
     public function test_cannot_verify_task_that_has_not_been_submitted(): void
     {
         $assignment = $this->createTaskWithAssignment(['assignment_status' => 'awaiting_activation']);

@@ -141,6 +141,11 @@ public function sendPasswordResetNotification($token)
         return $this->role === 'investor';
     }
 
+    public function isFinancial(): bool
+    {
+        return $this->role === 'financial';
+    }
+
     public function isActive(): bool
     {
         return $this->status === 'active';

@@ -10,23 +10,34 @@ class TelegramService
 {
     protected ?string $token;
     protected ?string $chatId;
+    protected ?string $financialChatId;
 
     public function __construct()
     {
-        $this->token  = config('services.telegram.bot_token');
-        $this->chatId = config('services.telegram.chat_id');
+        $this->token           = config('services.telegram.bot_token');
+        $this->chatId          = config('services.telegram.chat_id');
+        $this->financialChatId = config('services.telegram.financial_chat_id');
     }
 
     /**
-     * Send a plain text message to the configured admin chat.
-     * Fails silently (logs the error) so a Telegram outage never breaks
-     * the actual business action (deposit approval, registration, etc).
+     * Send a plain text message to the configured admin chat, and —
+     * additively, Financial Team dashboard — to the financial chat too
+     * if one is configured. Fails silently (logs the error) so a
+     * Telegram outage never breaks the actual business action (deposit
+     * approval, registration, etc).
      */
     public function notify(string $message): bool
     {
         if (!$this->token || !$this->chatId) {
             Log::warning('Telegram notification skipped: bot token or chat ID not configured.');
             return false;
+        }
+
+        // Financial team chat is genuinely optional and separate from
+        // the primary send below — its own failure/absence never
+        // affects whether the primary notification succeeds.
+        if ($this->financialChatId) {
+            $this->sendMessage($this->financialChatId, $message);
         }
 
         try {

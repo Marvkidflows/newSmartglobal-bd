@@ -29,7 +29,7 @@ class Task extends Model
         'task_code', 'task_type_id', 'title', 'description', 'requirements',
         'required_amount', 'status', 'activates_at', 'expires_at',
         'last_window_update', 'window_modified_by', 'window_modified_reason',
-        'created_by', 'closed_at',
+        'created_by', 'closed_at', 'deactivated_at', 'deactivated_by', 'deactivation_reason',
     ];
 
     protected $casts = [
@@ -38,13 +38,20 @@ class Task extends Model
         'expires_at'         => 'datetime',
         'last_window_update' => 'datetime',
         'closed_at'          => 'datetime',
+        'deactivated_at'     => 'datetime',
     ];
 
     public function taskType() { return $this->belongsTo(TaskType::class); }
     public function creator() { return $this->belongsTo(User::class, 'created_by'); }
     public function windowModifier() { return $this->belongsTo(User::class, 'window_modified_by'); }
+    public function deactivator() { return $this->belongsTo(User::class, 'deactivated_by'); }
     public function assignments() { return $this->hasMany(TaskAssignment::class); }
     public function logs() { return $this->hasMany(TaskActivityLog::class)->orderByDesc('created_at'); }
+
+    public function isDeactivated(): bool
+    {
+        return $this->deactivated_at !== null;
+    }
 
     protected static function booted()
     {
@@ -74,6 +81,13 @@ class Task extends Model
     {
         if (!in_array($this->status, ['expired', 'cancelled', 'closed'], true) && $this->is_expired) {
             return 'expired';
+        }
+        // Deactivation is deliberately shown as its own status rather than
+        // folded into the stored `status` column — the underlying status
+        // (usually 'active') is what resume restores, so it must survive
+        // a deactivate/resume cycle unchanged.
+        if ($this->isDeactivated() && !in_array($this->status, ['expired', 'cancelled', 'closed'], true)) {
+            return 'deactivated';
         }
         return $this->status;
     }

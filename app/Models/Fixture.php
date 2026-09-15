@@ -23,16 +23,27 @@ class Fixture extends Model
         return Competition::orderBy('sort_order')->pluck('name')->all();
     }
 
+    // Full fixture lifecycle. `status` was originally a DB enum limited
+    // to scheduled/live/finished/cancelled; the column is now a plain
+    // string (see the 2026_09_14 migration) so this constant — not a
+    // schema change — is the single source of truth for valid values.
+    // 'postponed' was added to support provider-driven sync (a match
+    // the provider marks POSTPONED/SUSPENDED lands here rather than
+    // being force-fit into 'cancelled', which is reserved for matches
+    // that are truly off and will not be replayed).
+    public const STATUSES = ['scheduled', 'live', 'postponed', 'finished', 'cancelled'];
+
     protected $fillable = [
         'league', 'home_team', 'away_team', 'kickoff_at', 'status',
         'home_score', 'away_score', 'created_by', 'resolved_by', 'resolved_at',
-        'source', 'is_published', 'external_id',
+        'source', 'is_published', 'external_id', 'provider_status', 'last_synced_at',
     ];
 
     protected $casts = [
-        'kickoff_at'   => 'datetime',
-        'resolved_at'  => 'datetime',
-        'is_published' => 'boolean',
+        'kickoff_at'      => 'datetime',
+        'resolved_at'     => 'datetime',
+        'is_published'    => 'boolean',
+        'last_synced_at'  => 'datetime',
     ];
 
     // Only fixtures investors are ever allowed to see. Manual fixtures are
@@ -43,9 +54,33 @@ class Fixture extends Model
         return $query->where('is_published', true);
     }
 
+    // API-fetched fixtures sitting unpublished — what the admin "Pending
+    // Review" queue shows. Manual fixtures never appear here since they
+    // publish immediately on creation.
+    public function scopePendingReview($query)
+    {
+        return $query->where('is_published', false);
+    }
+
+    // Whether this fixture can still be edited/postponed/cancelled/have
+    // markets touched — i.e. it hasn't been finally resolved yet.
+    public function getIsEditableAttribute(): bool
+    {
+        return !in_array($this->status, ['finished', 'cancelled']);
+    }
+
     public function markets() { return $this->hasMany(FixtureMarket::class); }
     public function creator() { return $this->belongsTo(User::class, 'created_by'); }
     public function resolver(){ return $this->belongsTo(User::class, 'resolved_by'); }
+
+    // Every prediction submitted against any of this fixture's markets —
+    // lets the admin side query/count "predictions taken" per fixture
+    // (e.g. withCount('predictions')) without a manual join, since a
+    // prediction belongs to a market, not directly to a fixture.
+    public function predictions()
+    {
+        return $this->hasManyThrough(FixturePrediction::class, FixtureMarket::class, 'fixture_id', 'fixture_market_id');
+    }
 
     /**
      * Given the final score, work out the actual 1X2 result. Every other

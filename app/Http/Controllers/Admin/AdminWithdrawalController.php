@@ -10,6 +10,7 @@ use App\Models\InvestmentAccount;
 use App\Models\BalanceAdjustment;
 use App\Services\TelegramService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class AdminWithdrawalController extends Controller
 {
@@ -107,45 +108,63 @@ class AdminWithdrawalController extends Controller
     }
 
     // POST /admin/withdrawals/{withdrawal}/approve
+    //
+    // Same reasoning as AdminDepositController::approve() — Admin and
+    // Financial dashboards share this method, so the status check and the
+    // balance debit are locked together in one transaction. This also
+    // fixes a second race: the insufficient-balance check now happens
+    // against a row-locked user balance, so two concurrent withdrawal
+    // approvals for the same investor can't both pass the balance check
+    // and jointly overdraw the account.
     public function approve(Request $request, Withdrawal $withdrawal)
     {
-        if ($withdrawal->status !== 'pending' && $withdrawal->status !== 'hold') {
-            if ($request->expectsJson()) {
-                return response()->json(['message' => 'Withdrawal is not pending or on hold.'], 422);
+        $outcome = DB::transaction(function () use ($request, $withdrawal) {
+            $locked = Withdrawal::where('id', $withdrawal->id)->lockForUpdate()->first();
+
+            if (!in_array($locked->status, ['pending', 'hold'], true)) {
+                return ['ok' => false, 'reason' => 'not_pending', 'user' => null];
             }
-            return back()->withErrors(['error' => 'Not pending.']);
-        }
 
-        $user = User::find($withdrawal->user_id);
-        if ($user && $user->balance < $withdrawal->amount) {
-            if ($request->expectsJson()) {
-                return response()->json(['message' => 'Insufficient user balance.'], 422);
+            $user = User::where('id', $locked->user_id)->lockForUpdate()->first();
+            if ($user && $user->balance < $locked->amount) {
+                return ['ok' => false, 'reason' => 'insufficient', 'user' => null];
             }
-            return back()->withErrors(['error' => 'Insufficient balance.']);
-        }
 
-        $withdrawal->update([
-            'status'       => 'approved',
-            'processed_at' => now(),
-            'processed_by' => $request->user()->id,
-        ]);
-
-        if ($user) {
-            $balanceBefore = (float) ($user->balance ?? 0);
-            $user->decrement('balance', $withdrawal->amount);
-            $balanceAfter = (float) $user->balance;
-
-            BalanceAdjustment::create([
-                'user_id'        => $user->id,
-                'admin_id'       => $request->user()->id,
-                'type'           => 'deduct',
-                'amount'         => $withdrawal->amount,
-                'balance_before' => $balanceBefore,
-                'balance_after'  => $balanceAfter,
-                'reason'         => "Withdrawal #{$withdrawal->id} approved",
+            $locked->update([
+                'status'       => 'approved',
+                'processed_at' => now(),
+                'processed_by' => $request->user()->id,
             ]);
 
-            $this->telegram->withdrawalApproved($user->name ?? $user->full_name ?? 'Investor', (float) $withdrawal->amount);
+            if ($user) {
+                $balanceBefore = (float) ($user->balance ?? 0);
+                $user->decrement('balance', $locked->amount);
+                $balanceAfter = (float) $user->balance;
+
+                BalanceAdjustment::create([
+                    'user_id'        => $user->id,
+                    'admin_id'       => $request->user()->id,
+                    'type'           => 'deduct',
+                    'amount'         => $locked->amount,
+                    'balance_before' => $balanceBefore,
+                    'balance_after'  => $balanceAfter,
+                    'reason'         => "Withdrawal #{$locked->id} approved",
+                ]);
+            }
+
+            return ['ok' => true, 'user' => $user, 'amount' => (float) $locked->amount];
+        });
+
+        if (!$outcome['ok']) {
+            $message = $outcome['reason'] === 'insufficient' ? 'Insufficient user balance.' : 'Withdrawal is not pending or on hold.';
+            if ($request->expectsJson()) {
+                return response()->json(['message' => $message], 422);
+            }
+            return back()->withErrors(['error' => $outcome['reason'] === 'insufficient' ? 'Insufficient balance.' : 'Not pending.']);
+        }
+
+        if ($outcome['user']) {
+            $this->telegram->withdrawalApproved($outcome['user']->name ?? $outcome['user']->full_name ?? 'Investor', $outcome['amount']);
         }
 
         if ($request->expectsJson()) {
@@ -157,19 +176,29 @@ class AdminWithdrawalController extends Controller
     // POST /admin/withdrawals/{withdrawal}/reject
     public function reject(Request $request, Withdrawal $withdrawal)
     {
-        if ($withdrawal->status !== 'pending' && $withdrawal->status !== 'hold') {
+        $ok = DB::transaction(function () use ($request, $withdrawal) {
+            $locked = Withdrawal::where('id', $withdrawal->id)->lockForUpdate()->first();
+
+            if (!in_array($locked->status, ['pending', 'hold'], true)) {
+                return false;
+            }
+
+            $locked->update([
+                'status'       => 'rejected',
+                'processed_at' => now(),
+                'processed_by' => $request->user()->id,
+                'admin_notes'  => $request->reason ?? $locked->admin_notes,
+            ]);
+
+            return true;
+        });
+
+        if (!$ok) {
             if ($request->expectsJson()) {
                 return response()->json(['message' => 'Withdrawal is not pending or on hold.'], 422);
             }
             return back()->withErrors(['error' => 'Not pending.']);
         }
-
-        $withdrawal->update([
-            'status'       => 'rejected',
-            'processed_at' => now(),
-            'processed_by' => $request->user()->id,
-            'admin_notes'  => $request->reason ?? $withdrawal->admin_notes,
-        ]);
 
         if ($request->expectsJson()) {
             return response()->json(['message' => 'Withdrawal rejected.', 'status' => 'rejected']);
@@ -180,17 +209,27 @@ class AdminWithdrawalController extends Controller
     // POST /admin/withdrawals/{withdrawal}/hold
     public function hold(Request $request, Withdrawal $withdrawal)
     {
-        if ($withdrawal->status !== 'pending') {
+        $ok = DB::transaction(function () use ($withdrawal) {
+            $locked = Withdrawal::where('id', $withdrawal->id)->lockForUpdate()->first();
+
+            if ($locked->status !== 'pending') {
+                return false;
+            }
+
+            $locked->update([
+                'status'  => 'hold',
+                'held_at' => now(),
+            ]);
+
+            return true;
+        });
+
+        if (!$ok) {
             if ($request->expectsJson()) {
                 return response()->json(['message' => 'Only pending withdrawals can be put on hold.'], 422);
             }
             return back()->withErrors(['error' => 'Not pending.']);
         }
-
-        $withdrawal->update([
-            'status'  => 'hold',
-            'held_at' => now(),
-        ]);
 
         if ($request->expectsJson()) {
             return response()->json(['message' => 'Withdrawal placed on hold.', 'status' => 'hold']);

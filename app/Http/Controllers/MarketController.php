@@ -24,17 +24,19 @@ class MarketController extends Controller
         $this->market = $market;
     }
 
-    // GET /api/market/assets?search=&limit=
+    // GET /api/market/assets?search=&limit=&category=crypto|commodity|index
     public function index(Request $request)
     {
         $request->validate([
-            'search' => ['nullable', 'string', 'max:50'],
-            'limit'  => ['nullable', 'integer', 'min:1', 'max:100'],
+            'search'   => ['nullable', 'string', 'max:50'],
+            'limit'    => ['nullable', 'integer', 'min:1', 'max:100'],
+            'category' => ['nullable', 'in:crypto,commodity,index'],
         ]);
 
         $result = $this->market->listAssets(
             (int) $request->input('limit', 50),
-            $request->input('search')
+            $request->input('search'),
+            $request->input('category')
         );
 
         if (!$result['ok']) {
@@ -51,6 +53,26 @@ class MarketController extends Controller
             'meta'   => [
                 'label' => 'Market information — not a trading execution venue.',
             ],
+        ]);
+    }
+
+    // GET /api/market/overview — spotlight assets (Bitcoin, Ethereum,
+    // Solana, Gold, S&P 500, NASDAQ) with sparkline data where available,
+    // for the Market Overview cards at the top of the Live Market page.
+    public function overview()
+    {
+        $result = $this->market->overview();
+
+        if (!$result['ok']) {
+            return response()->json([
+                'message' => $result['error'],
+                'assets'  => [],
+            ], $result['status'] ?? 503);
+        }
+
+        return response()->json([
+            'assets' => $result['data'],
+            'stale'  => $result['stale'] ?? false,
         ]);
     }
 
