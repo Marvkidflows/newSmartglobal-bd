@@ -53,4 +53,23 @@ class FinancialNotificationService
             ['withdrawal_id' => $withdrawalId]
         );
     }
+
+    public function balanceAdjusted(int $userId, string $investorName, string $type, float $amount, string $adminName): void
+    {
+        $verb = match ($type) {
+            'add'      => 'added $' . number_format($amount, 2) . ' to',
+            'deduct'   => 'deducted $' . number_format($amount, 2) . ' from',
+            'reset'    => 'reset',
+            'freeze'   => 'froze',
+            'unfreeze' => 'unfroze',
+            default    => 'adjusted',
+        };
+
+        $this->notifyFinancialTeam(
+            'Investor Balance Adjusted',
+            "{$adminName} {$verb} {$investorName}'s balance.",
+            'balance_adjustment',
+            ['user_id' => $userId, 'adjustment_type' => $type]
+        );
+    }
 }

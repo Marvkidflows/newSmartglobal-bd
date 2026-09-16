@@ -23,7 +23,7 @@ class AdminDashboardController extends Controller
             $totalInvestors     = User::where('role', 'investor')->count();
             $activeInvestors    = User::where('role', 'investor')->where('status', 'active')->count();
             $totalInvested      = (float) (InvestmentAccount::sum('amount') ?? 0);
-            $totalProfit        = (float) (InvestmentAccount::sum('expected_profit') ?? 0);
+            $totalProfit        = (float) (InvestmentAccount::where('status', 'completed')->sum('expected_profit') ?? 0);
             $totalDeposits      = (float) (Deposit::where('status', 'approved')->sum('amount') ?? 0);
             $totalWithdrawals   = (float) (Withdrawal::where('status', 'approved')->sum('amount') ?? 0);
             $pendingWithdrawals = Withdrawal::where('status', 'pending')->count();

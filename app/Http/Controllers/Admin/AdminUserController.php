@@ -9,10 +9,18 @@ use App\Models\InvestmentAccount;
 use App\Models\Deposit;
 use App\Models\Withdrawal;
 use App\Models\BalanceAdjustment;
+use App\Services\FinancialNotificationService;
 use Illuminate\Http\Request;
 
 class AdminUserController extends Controller
 {
+    protected FinancialNotificationService $financialNotifier;
+
+    public function __construct(FinancialNotificationService $financialNotifier)
+    {
+        $this->financialNotifier = $financialNotifier;
+    }
+
     // GET /admin/users
     public function index(Request $request)
     {
@@ -111,7 +119,7 @@ class AdminUserController extends Controller
                 'city'           => $user->city ?? null,
                 'balance'        => (float) ($user->balance ?? 0),
                 'total_invested' => (float) $investments->sum('amount'),
-                'total_profit'   => (float) $investments->sum('expected_profit'),
+                'total_profit'   => (float) $investments->where('status', 'completed')->sum('expected_profit'),
                 'status'         => $user->status ?? 'active',
                 'role'           => $user->role,
                 'created_at'     => $user->created_at->toDateString(),
@@ -287,6 +295,18 @@ class AdminUserController extends Controller
             'balance_after'  => $balanceAfter,
             'reason'         => $validated['reason'],
         ]);
+
+        // ADDED — the financial team was never told when an admin added,
+        // deducted, or reset an investor's balance. Deposits and
+        // withdrawals already notify them via FinancialNotificationService;
+        // this was the one balance-changing action that skipped it.
+        $this->financialNotifier->balanceAdjusted(
+            $user->id,
+            $user->name ?? $user->full_name ?? 'Investor',
+            $validated['type'],
+            $amount,
+            $request->user()->name
+        );
 
         return response()->json([
             'message' => 'Balance adjustment applied successfully.',

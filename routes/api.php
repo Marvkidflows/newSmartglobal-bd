@@ -509,6 +509,16 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         Route::get('/investments',              [AdminInvestmentController::class, 'index'])->name('investments.index');
         Route::get('/investments/{investment}', [AdminInvestmentController::class, 'show'])->name('investments.show');
 
+        // ADDED — investor list/detail + balance add/deduct. Reuses the
+        // same AdminUserController methods the admin side calls (they
+        // already scope to role='investor' and can't touch admin/
+        // financial accounts). This is what actually lets the financial
+        // team add/deduct money themselves, separate from just being
+        // notified when an admin does it (FinancialNotificationService).
+        Route::get('/investors',                  [AdminUserController::class, 'index'])->name('investors.index');
+        Route::get('/investors/{user}',            [AdminUserController::class, 'show'])->name('investors.show');
+        Route::post('/investors/{user}/balance',   [AdminUserController::class, 'adjustBalance'])->name('investors.balance');
+
         // Notifications — the exact same controller/table investors use
         // (Auth::user()->notifications()), just reached from here. New
         // deposit/withdrawal notifications are pushed to financial+admin

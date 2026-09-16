@@ -52,7 +52,7 @@ class InvestorTaskController extends Controller
 
         return response()->json([
             'balance' => $balance,
-            'tasks'   => $assignments->map(fn($a) => $this->formatAssignment($a)),
+            'tasks'   => $assignments->map(fn($a) => $this->formatAssignment($a, detailed: true)),
             'summary' => $summary,
         ]);
     }

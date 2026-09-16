@@ -26,7 +26,11 @@ class InvestorDashboardController extends Controller
 
         $activeInvestments = $investments->where('status', 'active');
         $totalInvested     = $investments->sum('amount');
-        $totalProfit       = $investments->sum('expected_profit');
+        // FIXED — was summing expected_profit across ALL investments
+        // (active + completed), so profit showed on the dashboard the
+        // instant a plan was started, before it matured. Total Profit
+        // should only reflect profit actually paid out on completion.
+        $totalProfit       = $investments->where('status', 'completed')->sum('expected_profit');
         $activePlans       = $activeInvestments->count();
 
         // ── DEPOSITS ─────────────────────────────────────────────────────────
