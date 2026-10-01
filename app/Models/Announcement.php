@@ -20,6 +20,7 @@ class Announcement extends Model
         'investor_information',
         'project_update',
         'general_communication',
+        'financial_notice',   // issued by the Financial Team (department = 'financial')
         'other',
     ];
 
@@ -31,6 +32,7 @@ class Announcement extends Model
         'image_url',
         'type',
         'category',
+        'department',
         'is_popup',
         'is_featured',
         'is_active',

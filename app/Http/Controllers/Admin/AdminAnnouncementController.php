@@ -208,6 +208,7 @@ class AdminAnnouncementController extends Controller
             'image_url'    => $a->image_url,
             'type'         => $a->type ?? 'general',
             'category'     => $a->category ?? 'general_communication',
+            'department'   => $a->department,
             'is_popup'     => (bool) $a->is_popup,
             'is_featured'  => (bool) $a->is_featured,
             'is_active'    => (bool) $a->is_active,

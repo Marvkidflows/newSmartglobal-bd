@@ -17,13 +17,19 @@ class Message extends Model
         'subject',
         'body',
         'initiated_by',
+        'department',
+        'sender_label',
+        'kind',
+        'broadcast_id',
         'read_by_admin',
         'read_by_investor',
+        'read_by_financial',
     ];
 
     protected $casts = [
         'read_by_admin'    => 'boolean',
         'read_by_investor' => 'boolean',
+        'read_by_financial'=> 'boolean',
     ];
 
     // ── RELATIONSHIPS ──────────────────────────────────────────────────────
@@ -69,11 +75,40 @@ class Message extends Model
                      ->where('initiated_by', 'admin');
     }
 
+    // Messages in the Financial Team's mailbox (either direction)
+    public function scopeFinancial($query)
+    {
+        return $query->where('department', 'financial');
+    }
+
+    // Investor-initiated messages the Financial Team has not read yet
+    public function scopeUnreadByFinancial($query)
+    {
+        return $query->where('department', 'financial')
+                     ->where('initiated_by', 'investor')
+                     ->where('read_by_financial', false);
+    }
+
     // ── HELPERS ────────────────────────────────────────────────────────────
 
     public function isFromAdmin(): bool
     {
         return $this->initiated_by === 'admin';
+    }
+
+    public const FINANCIAL_SENDER_LABEL = 'Smart System Investment — Financial Team';
+
+    // Display identity for the sender of this row. Staff rows use the label
+    // stored at send time, so history is stable across renames/removals.
+    public function displaySender(): string
+    {
+        if ($this->initiated_by === 'investor') {
+            return 'Investor';
+        }
+        if ($this->sender_label) {
+            return $this->sender_label;
+        }
+        return $this->department === 'financial' ? self::FINANCIAL_SENDER_LABEL : 'Smart System Investment — Support Team';
     }
 
     public function isFromInvestor(): bool

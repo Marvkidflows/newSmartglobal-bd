@@ -170,6 +170,7 @@ class RegisterController extends Controller
         $validated = $request->validate([
             'date_of_birth'      => ['required', 'date', 'before:-18 years'],
             'residential_address'=> ['required', 'string', 'max:500'],
+            'address_line_2'     => ['nullable', 'string', 'max:255'],
             'city'               => ['required', 'string', 'max:100'],
             'state'              => ['nullable', 'string', 'max:100'],
             'postal_code'        => ['nullable', 'string', 'max:20'],
@@ -179,7 +180,13 @@ class RegisterController extends Controller
 
         $user->update([
             'date_of_birth'       => $validated['date_of_birth'],
+            // NOTE: `residential_address` was previously missing from
+            // User::$fillable, so this value was being silently discarded
+            // by Eloquent's mass-assignment guard on every registration —
+            // it never actually reached the database. Fixed in
+            // app/Models/User.php as part of this change.
             'residential_address' => $validated['residential_address'],
+            'address_line_2'      => $validated['address_line_2'] ?? null,
             'city'                => $validated['city'],
             'state'               => $validated['state'] ?? null,
             'postal_code'         => $validated['postal_code'] ?? null,

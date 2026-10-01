@@ -20,6 +20,13 @@
                     ◆ Smart<span style="font-weight:400;">System</span> Investment
                   </td>
                 </tr>
+                @if(($department ?? null) === 'financial')
+                <tr>
+                  <td style="color:#BFD0FF; font-size:12px; letter-spacing:0.08em; text-transform:uppercase; padding-top:6px;">
+                    Financial Team
+                  </td>
+                </tr>
+                @endif
               </table>
             </td>
           </tr>
@@ -35,8 +42,13 @@
           <tr>
             <td style="padding:24px 32px; background:#F8FAFC; border-top:1px solid #E2E8F0;">
               <p style="margin:0; font-size:12px; color:#94A3B8; line-height:1.6;">
+                @if(($department ?? null) === 'financial')
+                This is an official communication from the Smart System Investment Financial Team. If you did not expect this message,
+                please contact our support team through your investor dashboard.
+                @else
                 This email was sent by Smart System Investment. If you did not expect this message,
                 please contact our support team.
+                @endif
               </p>
               <p style="margin:8px 0 0; font-size:12px; color:#CBD5E1;">
                 &copy; {{ date('Y') }} Smart System Investment. All rights reserved.

@@ -1,67 +1,59 @@
 <?php
-// LOCATION: app/Http/Controllers/Investor/InvestorEmailController.php
+// LOCATION: app/Jobs/SendBulkEmailJob.php
 
-namespace App\Http\Controllers\Investor;
+namespace App\Jobs;
 
-use App\Http\Controllers\Controller;
+use App\Mail\AdminCustomEmail;
 use App\Models\SentEmail;
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
+use App\Models\User;
+use App\Notifications\EmailReceivedNotification;
+use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Foundation\Bus\Dispatchable;
+use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\Mail;
 
-class InvestorEmailController extends Controller
+class SendBulkEmailJob implements ShouldQueue
 {
-    // GET /investor-investment/emails
-    public function index(Request $request)
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+
+    public int $tries = 3;
+    public int $timeout = 60;
+
+    public function __construct(
+        protected int $sentEmailId
+    ) {}
+
+    public function handle(): void
     {
-        $investor = Auth::user();
-
-        $emails = SentEmail::where('investor_id', $investor->id)
-            ->where('status', 'sent') // don't show failed sends to the investor
-            ->latest()
-            ->get()
-            ->map(fn($e) => [
-                'id'         => $e->id,
-                'subject'    => $e->subject,
-                'sender'     => 'Smart System Investment',
-                'sent_at'    => $e->sent_at?->toDateTimeString(),
-                'time_ago'   => $e->sent_at?->diffForHumans(),
-                'is_read'    => $e->read_by_investor,
-                'has_attachment' => !is_null($e->attachment_path),
-            ]);
-
-        $unreadCount = SentEmail::where('investor_id', $investor->id)
-            ->where('status', 'sent')
-            ->where('read_by_investor', false)
-            ->count();
-
-        return response()->json([
-            'emails'       => $emails,
-            'unread_count' => $unreadCount,
-        ]);
-    }
-
-    // GET /investor-investment/emails/{sentEmail}
-    public function show(Request $request, SentEmail $sentEmail)
-    {
-        $investor = Auth::user();
-
-        if ($sentEmail->investor_id !== $investor->id) {
-            return response()->json(['message' => 'Unauthorized.'], 403);
+        $sentEmail = SentEmail::find($this->sentEmailId);
+        if (!$sentEmail) {
+            return;
         }
 
-        if (!$sentEmail->read_by_investor) {
-            $sentEmail->update(['read_by_investor' => true, 'read_at' => now()]);
+        $investor = User::find($sentEmail->investor_id);
+        if (!$investor) {
+            $sentEmail->update(['status' => 'failed', 'error_message' => 'Investor no longer exists.']);
+            return;
         }
 
-        return response()->json([
-            'email' => [
-                'id'         => $sentEmail->id,
-                'subject'    => $sentEmail->subject,
-                'body_html'  => $sentEmail->body_html,
-                'sender'     => 'Smart System Investment',
-                'sent_at'    => $sentEmail->sent_at?->toDateTimeString(),
-                'has_attachment' => !is_null($sentEmail->attachment_path),
-            ],
-        ]);
+        try {
+            Mail::mailer('brevo')
+                ->to($sentEmail->recipient_email)
+                ->send(new AdminCustomEmail(
+                    $sentEmail->subject,
+                    $sentEmail->body_html,
+                    $sentEmail->attachment_path,
+                    $sentEmail->attachment_name,
+                    $sentEmail->department
+                ));
+
+            $sentEmail->update(['status' => 'sent', 'sent_at' => now()]);
+
+            $investor->notify(new EmailReceivedNotification($sentEmail->id, $sentEmail->subject));
+        } catch (\Throwable $e) {
+            $sentEmail->update(['status' => 'failed', 'error_message' => $e->getMessage()]);
+        }
     }
 }

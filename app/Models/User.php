@@ -27,6 +27,8 @@ class User extends Authenticatable
         'country',
         'country_iso2',
         'address',
+        'residential_address',
+        'address_line_2',
         'city',
         'state',
         'postal_code',
@@ -129,6 +131,13 @@ public function sendPasswordResetNotification($token)
         return $this->hasMany(User::class, 'referred_by');
     }
 
+    // MarvFlow Team Dashboard — requests currently assigned to this
+    // MarvFlow team member.
+    public function assignedTeamRequests()
+    {
+        return $this->hasMany(TeamRequest::class, 'assigned_to');
+    }
+
     // ── HELPERS ────────────────────────────────────────────────────────────
 
     public function isAdmin(): bool
@@ -144,6 +153,26 @@ public function sendPasswordResetNotification($token)
     public function isFinancial(): bool
     {
         return $this->role === 'financial';
+    }
+
+    // MarvFlow Team Dashboard — MarvFlow is Smart System Investment's
+    // external development team, deliberately kept separate from the
+    // admin/financial hierarchy above (see MarvflowMiddleware for why
+    // isAdmin() is never OR'd in here the way FinancialMiddleware does
+    // for financial).
+    public function isMarvflowMember(): bool
+    {
+        return $this->role === 'marvflow_member';
+    }
+
+    public function isMarvflowLead(): bool
+    {
+        return $this->role === 'marvflow_lead';
+    }
+
+    public function isMarvflow(): bool
+    {
+        return $this->isMarvflowMember() || $this->isMarvflowLead();
     }
 
     public function isActive(): bool

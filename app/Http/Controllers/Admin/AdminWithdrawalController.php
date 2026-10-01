@@ -9,16 +9,19 @@ use App\Models\User;
 use App\Models\InvestmentAccount;
 use App\Models\BalanceAdjustment;
 use App\Services\TelegramService;
+use App\Services\FinancialAuditService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class AdminWithdrawalController extends Controller
 {
     protected TelegramService $telegram;
+    protected FinancialAuditService $audit;
 
-    public function __construct(TelegramService $telegram)
+    public function __construct(TelegramService $telegram, FinancialAuditService $audit)
     {
         $this->telegram = $telegram;
+        $this->audit    = $audit;
     }
 
     // GET /admin/withdrawals
@@ -130,11 +133,19 @@ class AdminWithdrawalController extends Controller
                 return ['ok' => false, 'reason' => 'insufficient', 'user' => null];
             }
 
+            $prevStatus = $locked->status;
             $locked->update([
                 'status'       => 'approved',
                 'processed_at' => now(),
                 'processed_by' => $request->user()->id,
             ]);
+
+            // Audit trail — same transaction as the approval itself.
+            $this->audit->record(
+                $request->user(), 'withdrawal.approved', 'withdrawal', $locked->id, $locked->user_id,
+                ['status' => $prevStatus], ['status' => 'approved', 'amount' => (float) $locked->amount],
+                $request->input('reason')
+            );
 
             if ($user) {
                 $balanceBefore = (float) ($user->balance ?? 0);
@@ -183,12 +194,19 @@ class AdminWithdrawalController extends Controller
                 return false;
             }
 
+            $prevStatus = $locked->status;
             $locked->update([
                 'status'       => 'rejected',
                 'processed_at' => now(),
                 'processed_by' => $request->user()->id,
                 'admin_notes'  => $request->reason ?? $locked->admin_notes,
             ]);
+
+            $this->audit->record(
+                $request->user(), 'withdrawal.rejected', 'withdrawal', $locked->id, $locked->user_id,
+                ['status' => $prevStatus], ['status' => 'rejected', 'amount' => (float) $locked->amount],
+                $request->input('reason')
+            );
 
             return true;
         });
@@ -209,7 +227,7 @@ class AdminWithdrawalController extends Controller
     // POST /admin/withdrawals/{withdrawal}/hold
     public function hold(Request $request, Withdrawal $withdrawal)
     {
-        $ok = DB::transaction(function () use ($withdrawal) {
+        $ok = DB::transaction(function () use ($request, $withdrawal) {
             $locked = Withdrawal::where('id', $withdrawal->id)->lockForUpdate()->first();
 
             if ($locked->status !== 'pending') {
@@ -220,6 +238,11 @@ class AdminWithdrawalController extends Controller
                 'status'  => 'hold',
                 'held_at' => now(),
             ]);
+
+            $this->audit->record(
+                $request->user(), 'withdrawal.held', 'withdrawal', $locked->id, $locked->user_id,
+                ['status' => 'pending'], ['status' => 'hold'], $request->input('reason')
+            );
 
             return true;
         });

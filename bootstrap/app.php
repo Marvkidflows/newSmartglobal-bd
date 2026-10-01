@@ -21,6 +21,8 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'admin'               => \App\Http\Middleware\AdminMiddleware::class,
             'financial'           => \App\Http\Middleware\FinancialMiddleware::class,
+            'marvflow'            => \App\Http\Middleware\MarvflowMiddleware::class,
+            'marvflow.lead'       => \App\Http\Middleware\MarvflowLeadMiddleware::class,
             'investor'            => \App\Http\Middleware\InvestorMiddleware::class,
             'registration.stage'  => \App\Http\Middleware\RegistrationStageMiddleware::class,
             'check.account'       => \App\Http\Middleware\CheckAccountStatus::class,

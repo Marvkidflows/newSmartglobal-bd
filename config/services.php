@@ -44,6 +44,14 @@ return [
     // chat_id above. Leaving it unset changes nothing about current
     // behavior — the primary chat_id keeps working exactly as before.
     'financial_chat_id'  => env('TELEGRAM_FINANCIAL_CHAT_ID'),
+    // MarvFlow Team Dashboard — a THIRD, fully separate destination.
+    // Deliberately never falls back to chat_id/financial_chat_id: those
+    // reach Smart System Investment's own admin/financial staff, and a
+    // MarvFlow request notification must only ever reach the MarvFlow
+    // team's own chat. Required for MarvFlow request alerts to send —
+    // see TelegramService::newMarvflowRequest(), which logs a warning
+    // and skips sending (never throws) if this is left unset.
+    'marvflow_chat_id'   => env('TELEGRAM_MARVFLOW_CHAT_ID'),
     'agent_name'     => env('TELEGRAM_AGENT_NAME'),
     'agent_username' => env('TELEGRAM_AGENT_USERNAME'),
 ],

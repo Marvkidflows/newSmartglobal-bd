@@ -35,7 +35,8 @@ class InvestorProfileController extends Controller
                 'country'        => $user->country ?? null,
                 'country_code'   => $user->country_code ?? null,
                 'country_iso2'   => $user->country_iso2 ?? null,
-                'address'        => $user->address ?? null,
+                'address_line_1' => $user->residential_address ?? null,
+                'address_line_2' => $user->address_line_2 ?? null,
                 'city'           => $user->city ?? null,
                 'state'          => $user->state ?? null,
                 'postal_code'    => $user->postal_code ?? null,
@@ -84,7 +85,8 @@ class InvestorProfileController extends Controller
             'email'          => ['sometimes', 'email', 'unique:users,email,' . $user->id],
             'phone'          => ['sometimes', 'string', 'max:20'],
             'country_iso2'   => ['required_with:phone', 'string', 'size:2'],
-            'address'        => ['sometimes', 'string', 'max:500'],
+            'address_line_1' => ['sometimes', 'string', 'max:500'],
+            'address_line_2' => ['nullable', 'string', 'max:255'],
             'city'           => ['sometimes', 'string', 'max:100'],
             'state'          => ['nullable', 'string', 'max:100'],
             'postal_code'    => ['nullable', 'string', 'max:20'],
@@ -139,6 +141,14 @@ class InvestorProfileController extends Controller
             $validated['name'] = $validated['full_name'];
         } elseif (isset($validated['name'])) {
             $validated['full_name'] = $validated['name'];
+        }
+
+        // Map the API's address_line_1 to the actual DB column
+        // (residential_address — the field collected at registration/KYC;
+        // reused here rather than the separate legacy `address` column).
+        if (array_key_exists('address_line_1', $validated)) {
+            $validated['residential_address'] = $validated['address_line_1'];
+            unset($validated['address_line_1']);
         }
 
         $user->update($validated);

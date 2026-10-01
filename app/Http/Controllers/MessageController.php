@@ -7,6 +7,8 @@ use App\Models\Message;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Notification;
+use App\Notifications\FinancialAlertNotification;
 
 class MessageController extends Controller
 {
@@ -103,9 +105,16 @@ class MessageController extends Controller
                 'subject'      => $m->subject,
                 'created_at'   => $m->created_at->toDateTimeString(),
                 'time_ago'     => $m->created_at->diffForHumans(),
+                // Added: identity/department so admins can tell which team
+                // wrote each row (Financial Team rows are read-only oversight).
+                'department'   => $m->department ?? 'admin',
+                'sender_label' => $m->initiated_by === 'admin' ? $m->displaySender() : null,
+                'kind'         => $m->kind ?? 'message',
             ]);
 
         // Mark all investor messages in this thread as read by admin
+        // (only those addressed to the admin/support inbox — Financial-
+        // addressed rows are already stored read_by_admin = true).
         Message::where('investor_id', $investor->id)
             ->where('initiated_by', 'investor')
             ->where('read_by_admin', false)
@@ -182,6 +191,15 @@ class MessageController extends Controller
      */
     public function adminDelete(Request $request, Message $message)
     {
+        // Financial Team correspondence and official notices are a permanent
+        // record (compliance) — they cannot be deleted through the UI.
+        if (($message->department ?? 'admin') === 'financial' || ($message->kind ?? 'message') === 'notice') {
+            if ($request->expectsJson()) {
+                return response()->json(['message' => 'Financial Team communications and official notices are a permanent record and cannot be deleted.'], 403);
+            }
+            abort(403);
+        }
+
         $message->delete();
 
         if ($request->expectsJson()) {
@@ -205,16 +223,27 @@ class MessageController extends Controller
     {
         $investor = Auth::user();
 
-        // Get full thread between this investor and admin
+        // Full correspondence for this investor — support AND Financial Team
+        // rows share the one thread; `department`/`sender_label` say who wrote each.
         $thread = Message::conversation($investor->id)
             ->get()
             ->map(fn($m) => [
-                'id'         => $m->id,
-                'body'       => $m->body,
-                'from'       => $m->initiated_by,  // 'admin' or 'investor'
-                'subject'    => $m->subject,
-                'created_at' => $m->created_at->toDateTimeString(),
-                'time_ago'   => $m->created_at->diffForHumans(),
+                'id'           => $m->id,
+                'body'         => $m->body,
+                'from'         => $m->initiated_by,  // 'admin' or 'investor' (unchanged)
+                'subject'      => $m->subject,
+                'created_at'   => $m->created_at->toDateTimeString(),
+                'time_ago'     => $m->created_at->diffForHumans(),
+                // Added fields — purely additive
+                'department'   => $m->department ?? 'admin',
+                'sender_label' => $m->initiated_by === 'admin' ? $m->displaySender() : 'You',
+                'kind'         => $m->kind ?? 'message',
+                'was_unread'   => $m->initiated_by === 'admin' && !$m->read_by_investor,
+                'status'       => $m->initiated_by === 'admin'
+                                    ? ($m->read_by_investor ? 'read' : 'unread')
+                                    : (($m->department ?? 'admin') === 'financial'
+                                        ? ($m->read_by_financial ? 'read' : 'delivered')
+                                        : ($m->read_by_admin ? 'read' : 'delivered')),
             ]);
 
         // Count unread messages FROM admin
@@ -261,9 +290,62 @@ class MessageController extends Controller
         $investor = Auth::user();
 
         $validated = $request->validate([
-            'subject' => ['nullable', 'string', 'max:255'],
-            'body'    => ['required', 'string', 'max:5000'],
+            'subject'    => ['nullable', 'string', 'max:255'],
+            'body'       => ['required', 'string', 'max:5000'],
+            // Added: which team the investor is writing to. Defaults to the
+            // existing support inbox so current clients are unaffected.
+            'department' => ['nullable', 'in:admin,financial'],
         ]);
+
+        $department = $validated['department'] ?? 'admin';
+
+        if ($department === 'financial') {
+            $financial = User::where('role', 'financial')->orderBy('id')->first();
+            if (!$financial) {
+                return response()->json(['message' => 'The Financial Team is currently unavailable.'], 503);
+            }
+
+            $message = Message::create([
+                'sender_id'         => $investor->id,
+                'receiver_id'       => $financial->id,
+                'investor_id'       => $investor->id,
+                'subject'           => $validated['subject'] ?? null,
+                'body'              => $validated['body'],
+                'initiated_by'      => 'investor',
+                'department'        => 'financial',
+                'read_by_admin'     => true,   // not part of the support inbox's unread count
+                'read_by_financial' => false,
+                'read_by_investor'  => true,
+            ]);
+
+            try {
+                Notification::send(
+                    User::where('role', 'financial')->get(),
+                    new FinancialAlertNotification(
+                        'New investor message',
+                        ($investor->name ?? 'An investor') . ': ' . str($validated['subject'] ?: $validated['body'])->limit(80),
+                        'investor_message',
+                        ['investor_id' => $investor->id, 'message_id' => $message->id]
+                    )
+                );
+            } catch (\Throwable $e) { report($e); }
+
+            return response()->json([
+                'message' => 'Message sent to the Financial Team!',
+                'data'    => [
+                    'id'           => $message->id,
+                    'body'         => $message->body,
+                    'from'         => 'investor',
+                    'subject'      => $message->subject,
+                    'department'   => 'financial',
+                    'sender_label' => 'You',
+                    'kind'         => 'message',
+                    'status'       => 'delivered',
+                    'created_at'   => $message->created_at->toDateTimeString(),
+                    'time_ago'     => $message->created_at->diffForHumans(),
+                ],
+            ], 201);
+        }
 
         // Find any admin to receive the message
         $admin = User::where('role', 'admin')->first();
@@ -333,6 +415,22 @@ class MessageController extends Controller
 
         return view('investor.messages.show', compact('message'));
     }
+    /**
+     * GET /investor-investment/messages/unread-count
+     * Read-only badge count. Added because the layout used to poll the
+     * thread endpoint, which marks everything read as a side effect — that
+     * made read/unread state meaningless.
+     */
+    public function investorUnreadCount()
+    {
+        $count = Message::where('investor_id', Auth::id())
+            ->where('initiated_by', 'admin')
+            ->where('read_by_investor', false)
+            ->count();
+
+        return response()->json(['unread_count' => $count]);
+    }
+
     /**
  * POST /api/public/contact-support
  * Used by deactivated (logged-out) users to reach support without a session.

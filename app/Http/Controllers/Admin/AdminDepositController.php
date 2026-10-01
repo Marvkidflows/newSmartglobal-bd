@@ -8,16 +8,19 @@ use App\Models\Deposit;
 use App\Models\User;
 use App\Models\BalanceAdjustment;
 use App\Services\TelegramService;
+use App\Services\FinancialAuditService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class AdminDepositController extends Controller
 {
     protected TelegramService $telegram;
+    protected FinancialAuditService $audit;
 
-    public function __construct(TelegramService $telegram)
+    public function __construct(TelegramService $telegram, FinancialAuditService $audit)
     {
         $this->telegram = $telegram;
+        $this->audit    = $audit;
     }
 
     // GET /admin/deposits
@@ -97,11 +100,19 @@ class AdminDepositController extends Controller
                 return ['ok' => false, 'user' => null];
             }
 
+            $prevStatus = $locked->status;
             $locked->update([
                 'status'       => 'approved',
                 'processed_at' => now(),
                 'processed_by' => $request->user()->id,
             ]);
+
+            // Audit trail — same transaction as the approval itself.
+            $this->audit->record(
+                $request->user(), 'deposit.approved', 'deposit', $locked->id, $locked->user_id,
+                ['status' => $prevStatus], ['status' => 'approved', 'amount' => (float) $locked->amount],
+                $request->input('reason')
+            );
 
             $user = User::where('id', $locked->user_id)->lockForUpdate()->first();
             if ($user) {
@@ -179,12 +190,19 @@ class AdminDepositController extends Controller
                 return false;
             }
 
+            $prevStatus = $locked->status;
             $locked->update([
                 'status'       => 'rejected',
                 'processed_at' => now(),
                 'processed_by' => $request->user()->id,
                 'admin_notes'  => $request->reason ?? $locked->admin_notes,
             ]);
+
+            $this->audit->record(
+                $request->user(), 'deposit.rejected', 'deposit', $locked->id, $locked->user_id,
+                ['status' => $prevStatus], ['status' => 'rejected', 'amount' => (float) $locked->amount],
+                $request->input('reason')
+            );
 
             return true;
         });
@@ -205,7 +223,7 @@ class AdminDepositController extends Controller
     // POST /admin/deposits/{deposit}/hold
     public function hold(Request $request, Deposit $deposit)
     {
-        $ok = DB::transaction(function () use ($deposit) {
+        $ok = DB::transaction(function () use ($request, $deposit) {
             $locked = Deposit::where('id', $deposit->id)->lockForUpdate()->first();
 
             if ($locked->status !== 'pending') {
@@ -216,6 +234,11 @@ class AdminDepositController extends Controller
                 'status'  => 'hold',
                 'held_at' => now(),
             ]);
+
+            $this->audit->record(
+                $request->user(), 'deposit.held', 'deposit', $locked->id, $locked->user_id,
+                ['status' => 'pending'], ['status' => 'hold'], $request->input('reason')
+            );
 
             return true;
         });

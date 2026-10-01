@@ -63,6 +63,8 @@ class InvestorAnnouncementController extends Controller
             'image_url'  => $a->image_url,
             'type'       => $a->type ?? 'info',
             'category'   => $a->category ?? 'general_communication',
+            'department' => $a->department,
+            'source'     => $a->department === 'financial' ? 'Smart System Investment — Financial Team' : null,
             'is_popup'   => (bool) $a->is_popup, // AnnouncementPopup.jsx filters on this
             'is_featured'=> (bool) $a->is_featured,
             'created_at' => $a->created_at->toDateString(),
@@ -81,8 +83,10 @@ class InvestorAnnouncementController extends Controller
             'image_url'   => $a->image_url,
             'type'        => $a->type ?? 'info',
             'category'    => $a->category ?? 'general_communication',
+            'department'  => $a->department,
+            'source'      => $a->department === 'financial' ? 'Smart System Investment — Financial Team' : null,
             'is_featured' => (bool) $a->is_featured,
-            'author'      => $a->creator->name ?? 'Smart System Investment',
+            'author'      => $a->department === 'financial' ? 'Financial Team' : ($a->creator->name ?? 'Smart System Investment'),
             'created_at'  => $a->created_at->toDateString(),
             'time_ago'    => $a->created_at->diffForHumans(),
         ];

@@ -11,12 +11,14 @@ class TelegramService
     protected ?string $token;
     protected ?string $chatId;
     protected ?string $financialChatId;
+    protected ?string $marvflowChatId;
 
     public function __construct()
     {
         $this->token           = config('services.telegram.bot_token');
         $this->chatId          = config('services.telegram.chat_id');
         $this->financialChatId = config('services.telegram.financial_chat_id');
+        $this->marvflowChatId  = config('services.telegram.marvflow_chat_id');
     }
 
     /**
@@ -119,6 +121,40 @@ public function newDeposit(string $investorName, float $amount, string $referenc
             "Amount: $" . number_format($amount, 2) . "\n" .
             "Reason: {$reason}"
         );
+    }
+
+    // MarvFlow Team Dashboard — one new team_request notification.
+    // Deliberately its own method rather than routed through notify():
+    // notify() always fans out to chat_id (+financial_chat_id when
+    // set), and a MarvFlow request must ONLY ever reach the MarvFlow
+    // team's own chat, never SSI's own admin/financial Telegram chats.
+    //
+    // Never throws: if TELEGRAM_MARVFLOW_CHAT_ID isn't configured yet,
+    // this logs a warning and returns false — the request itself has
+    // already been saved to the database by the time this runs (see
+    // SendMarvflowTelegramNotification job), so a missing/misconfigured
+    // chat ID here never loses or blocks the request.
+    public function newMarvflowRequest(int $requestId, string $senderName, string $priority, string $subject, string $message, string $status = 'NEW'): bool
+    {
+        if (!$this->marvflowChatId) {
+            Log::warning('MarvFlow Telegram notification skipped: TELEGRAM_MARVFLOW_CHAT_ID is not configured.', [
+                'team_request_id' => $requestId,
+            ]);
+            return false;
+        }
+
+        $text =
+            "🆕 <b>NEW MARVFLOW TEAM REQUEST</b>\n\n" .
+            "🆔 <b>Request ID:</b> #{$requestId}\n" .
+            "🏢 <b>From:</b> Smart System Investment\n" .
+            "👤 <b>Sender:</b> " . e($senderName) . "\n" .
+            "⚡ <b>Priority:</b> " . strtoupper($priority) . "\n\n" .
+            "📌 <b>Subject:</b>\n" . e($subject) . "\n\n" .
+            "💬 <b>Message:</b>\n" . e($message) . "\n\n" .
+            "📊 <b>Status:</b> " . strtoupper($status) . "\n\n" .
+            "🕐 <b>Date:</b> " . now()->format('Y-m-d H:i');
+
+        return $this->sendMessage($this->marvflowChatId, $text);
     }
     
     public function sendMessage(int|string $chatId, string $message): bool

@@ -50,8 +50,15 @@ class LoginController extends Controller
             ])->onlyInput('email');
         }
 
-        // ── REGISTRATION INCOMPLETE — investors only; admins never go through this wizard ──
-        if ($user->role !== 'admin' && !$user->registration_completed) {
+        // ── REGISTRATION INCOMPLETE — investors only; admin, financial,
+        // and MarvFlow accounts are staff/team accounts created directly
+        // (no self-service signup, no registration wizard), so they never
+        // go through this check. Without marvflow_member/marvflow_lead
+        // listed here, a freshly created MarvFlow account would be
+        // permanently blocked at login unless registration_completed was
+        // manually set true for it — this makes that unnecessary.
+        $staffRoles = ['admin', 'financial', 'marvflow_member', 'marvflow_lead'];
+        if (!in_array($user->role, $staffRoles, true) && !$user->registration_completed) {
             if ($request->expectsJson()) {
                 return response()->json([
                     'success'        => false,

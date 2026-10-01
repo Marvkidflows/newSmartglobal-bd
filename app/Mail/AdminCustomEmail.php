@@ -27,6 +27,9 @@ class AdminCustomEmail extends Mailable
         public string $bodyHtml,
         public ?string $attachmentPath = null,
         public ?string $attachmentName = null,
+        // 'financial' brands the email as coming from the Financial Team
+        // (display name, header and footer). null/'admin' = unchanged.
+        public ?string $department = null,
     ) {}
 
     public function build()
@@ -34,9 +37,15 @@ class AdminCustomEmail extends Mailable
         $mail = $this->subject($this->emailSubject)
             ->view('emails.admin-custom')
             ->with([
-                'subject'  => $this->emailSubject,
-                'bodyHtml' => $this->bodyHtml,
+                'subject'    => $this->emailSubject,
+                'bodyHtml'   => $this->bodyHtml,
+                'department' => $this->department,
             ]);
+
+        // Same sending address (Brevo-verified); only the display name changes.
+        if ($this->department === 'financial') {
+            $mail->from(config('mail.from.address'), \App\Models\Message::FINANCIAL_SENDER_LABEL);
+        }
 
         if ($this->attachmentPath && file_exists($this->attachmentPath)) {
             $mail->attach($this->attachmentPath, [

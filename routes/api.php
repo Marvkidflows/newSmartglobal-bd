@@ -13,6 +13,14 @@ use App\Http\Controllers\Auth\EmailVerificationController;
 // Shared
 use App\Http\Controllers\MessageController;
 use App\Http\Controllers\NotificationController;
+use App\Http\Controllers\DevRequestController;
+use App\Http\Controllers\StaffMessageController;
+
+// MarvFlow Team Dashboard
+use App\Http\Controllers\Marvflow\MarvflowDashboardController;
+use App\Http\Controllers\Marvflow\MarvflowRequestController;
+use App\Http\Controllers\Marvflow\MarvflowTeamController;
+use App\Http\Controllers\Marvflow\MarvflowProfileController;
 
 // Admin
 use App\Http\Controllers\Admin\AdminDashboardController;
@@ -42,6 +50,13 @@ use App\Http\Controllers\Investor\InvestorReferralController;
 use App\Http\Controllers\Investor\InvestorProfileController;
 use App\Http\Controllers\Investor\InvestorAnnouncementController;
 use App\Http\Controllers\Investor\WithdrawalPinController;
+
+// Financial Team
+use App\Http\Controllers\Financial\FinancialInvestorController;
+use App\Http\Controllers\Financial\FinancialTransactionController;
+use App\Http\Controllers\Financial\FinancialMessageController;
+use App\Http\Controllers\Financial\FinancialNoticeController;
+use App\Http\Controllers\Financial\FinancialEmailController;
 
 /*
 |--------------------------------------------------------------------------
@@ -165,6 +180,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         Route::get('/messages',           [MessageController::class, 'investorIndex'])->name('messages.index');
         Route::get('/messages/create',    [MessageController::class, 'investorCreate'])->name('messages.create');
+        Route::get('/messages/unread-count', [MessageController::class, 'investorUnreadCount'])->name('messages.unread-count');
         Route::post('/messages',          [MessageController::class, 'investorStore'])->name('messages.store');
         Route::get('/messages/{message}', [MessageController::class, 'investorShow'])->name('messages.show');
         
@@ -249,6 +265,19 @@ Route::get('/investor/deposits/{deposit}',          [InvestorDepositController::
 
         Route::get('/dashboard', [AdminDashboardController::class, 'dashboard'])
             ->name('dashboard');
+
+        // MarvFlow Team Dashboard — "Contact Development Team" from the
+        // admin side. Own requests only (DevRequestController scopes
+        // every query to sender_id = auth user).
+        Route::get('/dev-requests',              [DevRequestController::class, 'index'])->name('dev-requests.index');
+        Route::post('/dev-requests',              [DevRequestController::class, 'store'])->name('dev-requests.store');
+        Route::get('/dev-requests/{id}',          [DevRequestController::class, 'show'])->name('dev-requests.show');
+        Route::post('/dev-requests/{id}/reply',   [DevRequestController::class, 'reply'])->name('dev-requests.reply');
+
+        // Admin <-> Financial shared channel — one conversation, both
+        // sides post and read the same thread.
+        Route::get('/staff-messages',  [StaffMessageController::class, 'index'])->name('staff-messages.index');
+        Route::post('/staff-messages', [StaffMessageController::class, 'store'])->name('staff-messages.store');
 
         Route::get('/analytics', [AdminAnalyticsController::class, 'index'])
             ->name('analytics');
@@ -485,21 +514,34 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         Route::get('/dashboard', [AdminDashboardController::class, 'dashboard'])
             ->name('dashboard');
 
+        // MarvFlow Team Dashboard — "Contact Development Team" from the
+        // financial side. Same controller/behavior as the admin routes
+        // above; own requests only.
+        Route::get('/dev-requests',              [DevRequestController::class, 'index'])->name('dev-requests.index');
+        Route::post('/dev-requests',              [DevRequestController::class, 'store'])->name('dev-requests.store');
+        Route::get('/dev-requests/{id}',          [DevRequestController::class, 'show'])->name('dev-requests.show');
+        Route::post('/dev-requests/{id}/reply',   [DevRequestController::class, 'reply'])->name('dev-requests.reply');
+
+        // Admin <-> Financial shared channel — same table/controller as
+        // the admin side; one shared conversation, not per-user threads.
+        Route::get('/staff-messages',  [StaffMessageController::class, 'index'])->name('staff-messages.index');
+        Route::post('/staff-messages', [StaffMessageController::class, 'store'])->name('staff-messages.store');
+
         // Deposits — full review/approve/reject/hold workflow, identical
         // to the admin one since it's literally the same controller.
         Route::get('/deposits',                    [AdminDepositController::class, 'index'])->name('deposits.index');
         Route::get('/deposits/{deposit}',          [AdminDepositController::class, 'show'])->name('deposits.show');
-        Route::post('/deposits/{deposit}/approve', [AdminDepositController::class, 'approve'])->name('deposits.approve');
-        Route::post('/deposits/{deposit}/reject',  [AdminDepositController::class, 'reject'])->name('deposits.reject');
-        Route::post('/deposits/{deposit}/hold',    [AdminDepositController::class, 'hold'])->name('deposits.hold');
+        Route::post('/deposits/{deposit}/approve', [AdminDepositController::class, 'approve'])->middleware('can:financial.act-on-transactions')->name('deposits.approve');
+        Route::post('/deposits/{deposit}/reject',  [AdminDepositController::class, 'reject'])->middleware('can:financial.act-on-transactions')->name('deposits.reject');
+        Route::post('/deposits/{deposit}/hold',    [AdminDepositController::class, 'hold'])->middleware('can:financial.act-on-transactions')->name('deposits.hold');
         Route::post('/deposits/{deposit}/notes',   [AdminDepositController::class, 'addNote'])->name('deposits.notes');
 
         // Withdrawals — same reasoning as deposits above.
         Route::get('/withdrawals',                       [AdminWithdrawalController::class, 'index'])->name('withdrawals.index');
         Route::get('/withdrawals/{withdrawal}',          [AdminWithdrawalController::class, 'show'])->name('withdrawals.show');
-        Route::post('/withdrawals/{withdrawal}/approve', [AdminWithdrawalController::class, 'approve'])->name('withdrawals.approve');
-        Route::post('/withdrawals/{withdrawal}/reject',  [AdminWithdrawalController::class, 'reject'])->name('withdrawals.reject');
-        Route::post('/withdrawals/{withdrawal}/hold',    [AdminWithdrawalController::class, 'hold'])->name('withdrawals.hold');
+        Route::post('/withdrawals/{withdrawal}/approve', [AdminWithdrawalController::class, 'approve'])->middleware('can:financial.act-on-transactions')->name('withdrawals.approve');
+        Route::post('/withdrawals/{withdrawal}/reject',  [AdminWithdrawalController::class, 'reject'])->middleware('can:financial.act-on-transactions')->name('withdrawals.reject');
+        Route::post('/withdrawals/{withdrawal}/hold',    [AdminWithdrawalController::class, 'hold'])->middleware('can:financial.act-on-transactions')->name('withdrawals.hold');
         Route::post('/withdrawals/{withdrawal}/notes',   [AdminWithdrawalController::class, 'addNote'])->name('withdrawals.notes');
 
         // Investment records — read-only. The countdown-manipulation
@@ -509,15 +551,75 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         Route::get('/investments',              [AdminInvestmentController::class, 'index'])->name('investments.index');
         Route::get('/investments/{investment}', [AdminInvestmentController::class, 'show'])->name('investments.show');
 
-        // ADDED — investor list/detail + balance add/deduct. Reuses the
-        // same AdminUserController methods the admin side calls (they
-        // already scope to role='investor' and can't touch admin/
-        // financial accounts). This is what actually lets the financial
-        // team add/deduct money themselves, separate from just being
-        // notified when an admin does it (FinancialNotificationService).
-        Route::get('/investors',                  [AdminUserController::class, 'index'])->name('investors.index');
-        Route::get('/investors/{user}',            [AdminUserController::class, 'show'])->name('investors.show');
-        Route::post('/investors/{user}/balance',   [AdminUserController::class, 'adjustBalance'])->name('investors.balance');
+        // Investor financial records — NOW served by FinancialInvestorController
+        // instead of AdminUserController. The admin controller route-binds any
+        // user id (staff accounts included) and accepts freeze/unfreeze/reset;
+        // the financial controller only serves role=investor records and only
+        // allows wallet add/deduct. Same URLs and response shapes as before, so
+        // the existing pages keep working. Admin routes are unchanged.
+        Route::get('/investors',                  [FinancialInvestorController::class, 'index'])->name('investors.index');
+        Route::get('/investors/{user}',           [FinancialInvestorController::class, 'show'])->name('investors.show');
+        Route::post('/investors/{user}/balance',  [FinancialInvestorController::class, 'adjustBalance'])->name('investors.balance');
+
+        // Controlled, audited correction of an investment RECORD (amount /
+        // ROI %). Countdown / end-date / completion controls remain admin-only
+        // and are deliberately not routed here.
+        Route::post('/investments/{investment}/correct', [FinancialInvestorController::class, 'correctInvestment'])->name('investments.correct');
+
+        // Authorized, audited correction of an investor's mailing/postal
+        // information (Address Line 1/2, City, State, Postal Code). Reuses
+        // the same investor-scoped ownership check, reason requirement,
+        // and financial_audit_logs trail as the investment correction above.
+        Route::post('/investors/{user}/mailing-address', [FinancialInvestorController::class, 'correctMailingAddress'])->name('investors.mailing-address');
+
+        // Unified transactions (read-only) + audit trail (read-only).
+        Route::get('/transactions',                  [FinancialTransactionController::class, 'index'])->name('transactions.index');
+        Route::get('/transactions/{type}/{id}',      [FinancialTransactionController::class, 'show'])
+            ->whereIn('type', ['deposit', 'withdrawal', 'investment', 'adjustment'])->whereNumber('id')->name('transactions.show');
+        Route::get('/audit-logs',                    [FinancialTransactionController::class, 'auditLogs'])->name('audit-logs.index');
+
+        // Financial Team mailbox — extends the existing messages table.
+        // Static paths are declared before the {investor} ones.
+        Route::get('/messages',                      [FinancialMessageController::class, 'index'])->name('messages.index');
+        Route::get('/messages/unread-count',         [FinancialMessageController::class, 'unreadCount'])->name('messages.unread-count');
+        Route::get('/messages/broadcasts',           [FinancialMessageController::class, 'broadcasts'])->name('messages.broadcasts');
+        Route::get('/messages/broadcasts/{broadcastId}', [FinancialMessageController::class, 'broadcastShow'])->name('messages.broadcasts.show');
+        Route::post('/messages/broadcast',           [FinancialMessageController::class, 'broadcast'])->middleware('throttle:10,1')->name('messages.broadcast');
+        Route::get('/messages/{investor}',           [FinancialMessageController::class, 'show'])->whereNumber('investor')->name('messages.show');
+        Route::post('/messages/{investor}/send',     [FinancialMessageController::class, 'send'])->whereNumber('investor')->middleware('throttle:60,1')->name('messages.send');
+
+        // Financial Team access to the existing Email Center (Brevo email:
+        // compose, bulk, templates, logs). Same code as the admin Email Center
+        // via FinancialEmailController (extends AdminEmailController), scoped
+        // to department = 'financial', gated by financial.communicate /
+        // financial.issue-notices, and written to the financial audit trail.
+        Route::prefix('email-center')->name('email-center.')->group(function () {
+            Route::get('/dashboard',          [FinancialEmailController::class, 'dashboard'])->name('dashboard');
+            Route::get('/countries',          [FinancialEmailController::class, 'countries'])->name('countries');
+            Route::get('/plans',              [FinancialEmailController::class, 'plans'])->name('plans');
+            Route::get('/investors/search',   [FinancialEmailController::class, 'searchInvestors'])->name('investors.search');
+
+            Route::post('/send',              [FinancialEmailController::class, 'send'])->middleware('throttle:60,1')->name('send');
+            Route::post('/send-test',         [FinancialEmailController::class, 'sendTest'])->middleware('throttle:10,1')->name('send-test');
+
+            Route::get('/bulk/count',         [FinancialEmailController::class, 'bulkCount'])->name('bulk.count');
+            Route::post('/bulk/send',         [FinancialEmailController::class, 'bulkSend'])->middleware('throttle:10,1')->name('bulk.send');
+
+            Route::get('/templates',              [FinancialEmailController::class, 'templatesIndex'])->name('templates.index');
+            Route::post('/templates',             [FinancialEmailController::class, 'templatesStore'])->name('templates.store');
+            Route::put('/templates/{template}',   [FinancialEmailController::class, 'templatesUpdate'])->name('templates.update');
+            Route::delete('/templates/{template}',[FinancialEmailController::class, 'templatesDestroy'])->name('templates.destroy');
+
+            Route::get('/logs',               [FinancialEmailController::class, 'logs'])->name('logs');
+            Route::get('/logs/{sentEmail}',   [FinancialEmailController::class, 'logsShow'])->whereNumber('sentEmail')->name('logs.show');
+        });
+
+        // Financial Team Notices in the News & Information Centre
+        // (existing announcements table; own-department items only).
+        Route::get('/notices',                          [FinancialNoticeController::class, 'index'])->name('notices.index');
+        Route::post('/notices',                         [FinancialNoticeController::class, 'store'])->name('notices.store');
+        Route::post('/notices/{announcement}/publish',   [FinancialNoticeController::class, 'publish'])->name('notices.publish');
+        Route::post('/notices/{announcement}/unpublish', [FinancialNoticeController::class, 'unpublish'])->name('notices.unpublish');
 
         // Notifications — the exact same controller/table investors use
         // (Auth::user()->notifications()), just reached from here. New
@@ -538,4 +640,47 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         $user->unreadNotifications->markAsRead();
         return response()->json(['message' => 'All notifications marked as read.']);
     })->name('notifications.mark-all-read');
+
+    /*
+    |--------------------------------------------------------------------
+    | MARVFLOW TEAM DASHBOARD
+    |--------------------------------------------------------------------
+    | Smart System Investment's external development team (MarvFlow
+    | Technologies), NOT part of SSI's own admin/financial hierarchy —
+    | gated by MarvflowMiddleware, which deliberately does NOT let admin
+    | through the way FinancialMiddleware does for financial. See that
+    | middleware's docblock and the final report for why.
+    */
+    Route::middleware('marvflow')
+        ->prefix('marvflow')
+        ->name('marvflow.')
+        ->group(function () {
+
+        Route::get('/dashboard', [MarvflowDashboardController::class, 'index'])->name('dashboard');
+
+        // Requests — view/reply/status open to both marvflow_member and
+        // marvflow_lead; reassigning to someone else and changing
+        // priority are lead-only (marvflow.lead middleware stacked on
+        // just those two routes below).
+        Route::get('/requests',                [MarvflowRequestController::class, 'index'])->name('requests.index');
+        Route::get('/requests/{id}',           [MarvflowRequestController::class, 'show'])->name('requests.show');
+        Route::post('/requests/{id}/reply',    [MarvflowRequestController::class, 'reply'])->name('requests.reply');
+        Route::post('/requests/{id}/status',   [MarvflowRequestController::class, 'updateStatus'])->name('requests.status');
+        Route::post('/requests/{id}/assign',   [MarvflowRequestController::class, 'assign'])->name('requests.assign');
+
+        Route::middleware('marvflow.lead')->group(function () {
+            Route::post('/requests/{id}/priority', [MarvflowRequestController::class, 'updatePriority'])->name('requests.priority');
+        });
+
+        Route::get('/team', [MarvflowTeamController::class, 'index'])->name('team.index');
+
+        // Notifications — same shared controller/table every other role
+        // uses (Auth::user()->notifications()).
+        Route::get('/notifications',                      [NotificationController::class, 'index'])->name('notifications.index');
+        Route::post('/notifications/{notification}/read', [NotificationController::class, 'markAsRead'])->name('notifications.read');
+        Route::delete('/notifications/{notification}',    [NotificationController::class, 'destroy'])->name('notifications.destroy');
+
+        Route::get('/profile',           [MarvflowProfileController::class, 'show'])->name('profile.show');
+        Route::post('/profile/password', [MarvflowProfileController::class, 'changePassword'])->name('profile.password');
+    });
 });

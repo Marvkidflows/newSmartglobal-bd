@@ -13,6 +13,8 @@ class SentEmail extends Model
     protected $fillable = [
         'batch_id',
         'admin_id',
+        'department',
+        'sender_label',
         'investor_id',
         'recipient_name',
         'recipient_email',

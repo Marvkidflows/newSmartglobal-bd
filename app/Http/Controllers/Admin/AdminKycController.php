@@ -50,9 +50,15 @@ class AdminKycController extends Controller
             'email'                => $user->email,
             'phone'                => $user->phone,
             'country'              => $user->country,
-            'address'              => $user->address,
+            // Fixed: this was reading the separate, unrelated `address`
+            // column. The address actually collected during KYC Stage 2 is
+            // `residential_address` — the same field the investor's own
+            // profile and the Financial Team's investor view now use.
+            'address'              => $user->residential_address,
+            'address_line_2'       => $user->address_line_2,
             'city'                 => $user->city,
             'state'                => $user->state,
+            'postal_code'          => $user->postal_code,
             'date_of_birth'        => optional($user->date_of_birth)->toDateString(),
             'id_type'              => $user->id_type,
             'id_number'            => $user->id_number,
