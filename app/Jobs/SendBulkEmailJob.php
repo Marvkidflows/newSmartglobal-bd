@@ -45,7 +45,8 @@ class SendBulkEmailJob implements ShouldQueue
                     $sentEmail->subject,
                     $sentEmail->body_html,
                     $sentEmail->attachment_path,
-                    $sentEmail->attachment_name
+                    $sentEmail->attachment_name,
+                    $sentEmail->department
                 ));
 
             $sentEmail->update(['status' => 'sent', 'sent_at' => now()]);

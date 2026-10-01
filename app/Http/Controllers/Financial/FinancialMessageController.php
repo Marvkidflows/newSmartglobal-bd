@@ -23,6 +23,7 @@ use App\Models\Message;
 use App\Models\User;
 use App\Notifications\FinancialAlertNotification;
 use App\Services\FinancialAuditService;
+use App\Services\FinancialMailService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
@@ -31,7 +32,10 @@ use Illuminate\Support\Str;
 
 class FinancialMessageController extends Controller
 {
-    public function __construct(protected FinancialAuditService $audit) {}
+    public function __construct(
+        protected FinancialAuditService $audit,
+        protected FinancialMailService $mail,
+    ) {}
 
     // GET /financial/messages  — conversations (searchable)
     public function index(Request $request)
@@ -122,6 +126,7 @@ class FinancialMessageController extends Controller
             'subject' => ['nullable', 'string', 'max:255'],
             'body'    => ['required', 'string', 'max:5000'],
             'kind'    => ['nullable', 'in:message,notice'],
+            'also_email' => ['nullable', 'boolean'],
         ]);
         $kind = $v['kind'] ?? 'message';
         if ($kind === 'notice') {
@@ -158,9 +163,17 @@ class FinancialMessageController extends Controller
 
         $investor->notify($this->notification($kind, $v['subject'] ?? null, $message->id));
 
+        // Optional email copy. The in-app message above is already saved;
+        // an email problem is reported back but never undoes it.
+        $email = null;
+        if ($request->boolean('also_email')) {
+            $email = $this->mail->sendNow($actor, $investor, $v['subject'] ?? null, $v['body'], $kind);
+        }
+
         return response()->json([
             'message' => $kind === 'notice' ? 'Notice issued.' : 'Message sent.',
             'data'    => $this->format($message->load('sender:id,name'), $investor),
+            'email'   => $email,
         ], 201);
     }
 
@@ -176,9 +189,11 @@ class FinancialMessageController extends Controller
             'subject'       => ['required', 'string', 'max:255'],
             'body'          => ['required', 'string', 'max:5000'],
             'kind'          => ['nullable', 'in:message,notice'],
+            'also_email'    => ['nullable', 'boolean'],
         ]);
-        $kind  = $v['kind'] ?? 'notice';
-        $actor = $request->user();
+        $kind      = $v['kind'] ?? 'notice';
+        $actor     = $request->user();
+        $alsoEmail = $request->boolean('also_email');
 
         // Recipients are resolved server-side from the users table —
         // frontend-supplied ids are only ever a filter over real, active
@@ -193,10 +208,18 @@ class FinancialMessageController extends Controller
             return response()->json(['message' => 'No eligible investors found for this communication.'], 422);
         }
 
+        // Refuse BEFORE anything is created: with no real queue, emailing a
+        // large audience would time the request out half-way through.
+        if ($alsoEmail && config('queue.default') === 'sync' && $recipients->count() > FinancialMailService::SYNC_LIMIT) {
+            return response()->json([
+                'message' => "Emailing {$recipients->count()} investors needs a real queue (QUEUE_CONNECTION=database with a running queue worker); the safe limit without one is " . FinancialMailService::SYNC_LIMIT . '. Untick "Also send by email" or select fewer investors.',
+            ], 422);
+        }
+
         $broadcastId = 'BC-' . strtoupper(Str::random(10));
         $now         = now();
 
-        DB::transaction(function () use ($recipients, $v, $kind, $actor, $broadcastId, $now) {
+        DB::transaction(function () use ($recipients, $v, $kind, $actor, $broadcastId, $now, $alsoEmail) {
             foreach ($recipients->chunk(200) as $chunk) {
                 Message::insert($chunk->map(fn ($id) => [
                     'sender_id'         => $actor->id,
@@ -225,6 +248,7 @@ class FinancialMessageController extends Controller
                 'scope'           => $v['scope'],
                 'subject'         => $v['subject'],
                 'recipient_count' => $recipients->count(),
+                'also_emailed'    => $alsoEmail,
             ], null);
         });
 
@@ -235,10 +259,23 @@ class FinancialMessageController extends Controller
             try { Notification::send($chunk, $notification); } catch (\Throwable $e) { report($e); }
         }
 
+        // Optional email copies, queued after the in-app records are committed.
+        $emailsQueued = 0;
+        if ($alsoEmail) {
+            foreach (User::whereIn('id', $recipients)->get() as $investor) {
+                try {
+                    $this->mail->queue($actor, $investor, $v['subject'], $v['body'], $broadcastId, $kind);
+                    $emailsQueued++;
+                } catch (\Throwable $e) { report($e); }
+            }
+        }
+
         return response()->json([
-            'message'         => "Communication sent to {$recipients->count()} investor(s).",
+            'message'         => "Communication sent to {$recipients->count()} investor(s)."
+                . ($alsoEmail ? " {$emailsQueued} email cop" . ($emailsQueued === 1 ? 'y' : 'ies') . ' queued for delivery — track them in Email Center → Sent Emails / Logs.' : ''),
             'broadcast_id'    => $broadcastId,
             'recipient_count' => $recipients->count(),
+            'emails_queued'   => $emailsQueued,
         ], 201);
     }
 

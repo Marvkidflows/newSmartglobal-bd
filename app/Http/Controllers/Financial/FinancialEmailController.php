@@ -175,7 +175,7 @@ class FinancialEmailController extends AdminEmailController
             return response()->json(['success' => true, 'message' => 'Test email sent to ' . $request->user()->email]);
         } catch (\Throwable $e) {
             report($e);
-            return response()->json(['success' => false, 'message' => 'Failed to send test email.'], 500);
+            return response()->json(['success' => false, 'message' => 'Failed to send test email: ' . Str::limit($e->getMessage(), 300)], 500);
         }
     }
 
@@ -231,7 +231,7 @@ class FinancialEmailController extends AdminEmailController
             $this->audit->record($actor, 'communication.email_failed', 'sent_email', $sentEmail->id, $investor->id,
                 null, ['subject' => $subject, 'recipient_count' => 1, 'status' => 'failed'], null);
 
-            return ['success' => false, 'message' => 'Failed to send email. It has been logged as failed.', 'data' => $this->summary($sentEmail)];
+            return ['success' => false, 'message' => 'Failed to send: ' . Str::limit($e->getMessage(), 300) . ' (logged as failed in Sent Emails / Logs)', 'data' => $this->summary($sentEmail)];
         }
     }
 
