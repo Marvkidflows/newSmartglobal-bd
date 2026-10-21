@@ -94,7 +94,7 @@ class FinancialEmailController extends AdminEmailController
 
         $q = trim((string) $request->get('q'));
 
-        $query = User::where('role', 'investor')
+        $query = User::where('role', 'investor')->with('investorRank')
             ->where(fn ($w) => $w->whereNull('status')->orWhere('status', '!=', 'deactivated'));
 
         if ($q !== '') {
@@ -107,6 +107,7 @@ class FinancialEmailController extends AdminEmailController
             'investors' => $query->orderBy('name')->take(20)->get()->map(fn ($u) => [
                 'id'     => $u->id,
                 'name'   => $u->name ?? $u->full_name,
+                'rank'   => $u->rankBadge(),
                 'email'  => $u->email,
                 'status' => $u->status ?? 'active',
             ]),

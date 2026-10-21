@@ -12,27 +12,10 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule): void
     {
-        // Update investment maturity daily at midnight
-        $schedule->command('investments:update-maturity')
-            ->dailyAt('00:00')
-            ->timezone('UTC');
-        
-        // Optional: Run every minute for testing
-        // $schedule->command('investments:update-maturity')->everyMinute();
-
-        // Gaming & Prediction — automatic fixture synchronization.
-        // Imports new fixtures (pending admin review) and refreshes
-        // status/kickoff/score on fixtures already imported. Safe to
-        // run this often: FixtureSyncService takes a cache lock so an
-        // overlapping run (or a concurrent manual "Sync Now") never
-        // races another one. Requires `php artisan schedule:work` (or
-        // a real cron entry running `php artisan schedule:run` every
-        // minute) to actually fire — see the deployment note in the
-        // final report.
-        $schedule->command('gaming:sync-fixtures')
-            ->everyThirtyMinutes()
-            ->withoutOverlapping(10)
-            ->onOneServer();
+        // INTENTIONALLY EMPTY.
+        // Laravel 12 binds Illuminate\Foundation\Console\Kernel, not this class, so schedules defined
+        // here never ran. They now live in routes/console.php (gated by config/scheduling.php).
+        // Defining them in both places would schedule them twice if this class is ever wired up.
     }
 
     /**

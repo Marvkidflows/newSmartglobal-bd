@@ -119,6 +119,7 @@ class FinancialTransactionController extends Controller
             'investor'    => [
                 'id'             => $investor->id,
                 'name'           => $investor->name ?? $investor->full_name,
+                'rank'           => $investor->rankBadge(),
                 'email'          => $investor->email,
                 'status'         => $investor->status ?? 'active',
                 'balance'        => (float) ($investor->balance ?? 0),
@@ -199,7 +200,7 @@ class FinancialTransactionController extends Controller
             $this->applyStatus($q, $type, $v['status']);
         }
 
-        return $q->with('user:id,name,email')->latest()->take(self::CAP)->get()
+        return $q->with(['user:id,name,email,investor_rank_id', 'user.investorRank'])->latest()->take(self::CAP)->get()
             ->map(fn ($m) => $this->formatRow($type, $m, $m->user));
     }
 
@@ -245,7 +246,7 @@ class FinancialTransactionController extends Controller
             'type'        => $type,
             'id'          => $m->id,
             'reference'   => $prefix . '-' . str_pad((string) $m->id, 6, '0', STR_PAD_LEFT),
-            'investor'    => ['id' => $investor?->id, 'name' => $investor?->name ?? $investor?->full_name ?? 'Unknown', 'email' => $investor?->email ?? ''],
+            'investor'    => ['id' => $investor?->id, 'name' => $investor?->name ?? $investor?->full_name ?? 'Unknown', 'email' => $investor?->email ?? '', 'rank' => $investor?->rankBadge()],
             'amount'      => (float) $m->amount,
             'method'      => $type === 'deposit' ? $m->payment_method : ($type === 'withdrawal' ? $m->method : ($type === 'adjustment' ? $m->type : null)),
             'status'      => $this->normaliseStatus($type, $raw),
@@ -266,6 +267,7 @@ class FinancialTransactionController extends Controller
                 'plan'              => $m->investmentPlan?->name,
                 'held_at'           => optional($m->held_at)->toIso8601String(),
                 'processed_by'      => $m->processedBy?->name,
+                'payment'           => \App\Http\Controllers\Admin\AdminDepositController::paymentBlock($m),
             ],
             'withdrawal' => [
                 'account_details' => $m->account_details_array,

@@ -36,7 +36,7 @@ class AdminTaskController extends Controller
     // even when several rows share the same task_code).
     public function index(Request $request)
     {
-        $query = TaskAssignment::with(['user:id,name,email', 'task.taskType', 'task.creator:id,name']);
+        $query = TaskAssignment::with(['user:id,name,email,investor_rank_id', 'user.investorRank', 'task.taskType', 'task.creator:id,name']);
 
         if ($request->filled('status')) {
             $query->where('status', $request->status);
@@ -766,6 +766,7 @@ class AdminTaskController extends Controller
                 'id'    => $a->user->id ?? null,
                 'name'  => $a->user->name ?? 'Unknown',
                 'email' => $a->user->email ?? '',
+                'rank'  => $a->user?->rankBadge(),
             ],
             'shared_with_count' => $task->assignments()->count(),
         ];

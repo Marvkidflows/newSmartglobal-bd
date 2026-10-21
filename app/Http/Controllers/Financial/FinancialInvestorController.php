@@ -45,7 +45,7 @@ class FinancialInvestorController extends Controller
     {
         Gate::authorize('financial.view-records');
 
-        $query = User::where('role', 'investor');
+        $query = User::where('role', 'investor')->with('investorRank');
 
         if ($request->filled('search')) {
             $s = $request->search;
@@ -58,6 +58,7 @@ class FinancialInvestorController extends Controller
         $users = $query->withSum('investmentAccounts as total_invested_sum', 'amount')
             ->latest()->get()->map(fn (User $u) => [
                 'id'             => $u->id,
+                'rank'           => $u->rankBadge(),   // read-only classification label
                 'name'           => $u->name ?? $u->full_name,
                 'email'          => $u->email,
                 'phone'          => $u->phone,
@@ -124,6 +125,7 @@ class FinancialInvestorController extends Controller
             'user' => [
                 'id'               => $user->id,
                 'investor_id'      => 'INVSTR-' . str_pad((string) $user->id, 5, '0', STR_PAD_LEFT),
+                'rank'             => $user->rankBadge(),   // read-only classification label
                 'name'             => $user->name ?? $user->full_name,
                 'email'            => $user->email,
                 'phone'            => $user->phone,

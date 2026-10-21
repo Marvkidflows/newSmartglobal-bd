@@ -26,6 +26,7 @@ class InvestmentAccount extends Model
         'countdown_modified_by',
         'countdown_modified_reason',
         'is_paid',
+        'source_deposit_id',
     ];
 
     protected $casts = [

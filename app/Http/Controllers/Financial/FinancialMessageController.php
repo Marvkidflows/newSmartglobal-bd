@@ -67,14 +67,14 @@ class FinancialMessageController extends Controller
         $last    = Message::whereIn('id', $lastIds)->get()->keyBy('investor_id');
         $unread  = Message::unreadByFinancial()->whereIn('investor_id', $ids)
             ->selectRaw('investor_id, COUNT(*) as c')->groupBy('investor_id')->pluck('c', 'investor_id');
-        $users   = User::whereIn('id', $ids)->where('role', 'investor')->get(['id', 'name', 'email', 'status'])->keyBy('id');
+        $users   = User::whereIn('id', $ids)->where('role', 'investor')->with('investorRank')->get(['id', 'name', 'email', 'status', 'investor_rank_id'])->keyBy('id');
 
         $conversations = $ids->map(function ($id) use ($last, $unread, $users) {
             $u = $users->get($id);
             $m = $last->get($id);
             if (!$u || !$m) return null;
             return [
-                'investor'     => ['id' => $u->id, 'name' => $u->name, 'email' => $u->email, 'status' => $u->status ?? 'active'],
+                'investor'     => ['id' => $u->id, 'name' => $u->name, 'rank' => $u->rankBadge(), 'email' => $u->email, 'status' => $u->status ?? 'active'],
                 'last_message' => [
                     'preview'    => Str::limit($m->body, 90),
                     'subject'    => $m->subject,
@@ -111,7 +111,7 @@ class FinancialMessageController extends Controller
         Message::unreadByFinancial()->where('investor_id', $investor->id)->update(['read_by_financial' => true]);
 
         return response()->json([
-            'investor' => ['id' => $investor->id, 'name' => $investor->name, 'email' => $investor->email, 'status' => $investor->status ?? 'active'],
+            'investor' => ['id' => $investor->id, 'name' => $investor->name, 'rank' => $investor->rankBadge(), 'email' => $investor->email, 'status' => $investor->status ?? 'active'],
             'thread'   => $rows->map(fn (Message $m) => $this->format($m, $investor))->values(),
         ]);
     }

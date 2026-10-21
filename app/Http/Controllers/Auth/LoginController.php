@@ -90,6 +90,8 @@ class LoginController extends Controller
                     'phone'          => $user->phone ?? null,
                     'country'        => $user->country ?? null,
                     'status'         => $user->status ?? 'active',
+                    'rank'           => $user->role === 'investor' ? $user->rankBadge() : null,
+                    'account_id'     => $user->role === 'investor' ? $user->account_id : null,
                     'created_at'     => $user->created_at,
                     // The block above already guarantees registration is
                     // complete by the time we get here, but the frontend's

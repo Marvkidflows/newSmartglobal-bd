@@ -96,6 +96,8 @@ class InvestorDashboardController extends Controller
                 'balance'       => (float) ($user->balance ?? 0),
                 'referral_code' => $user->referral_code ?? null,
                 'status'        => $user->status ?? 'active',
+                'account_id'    => $user->account_id,
+                'rank'          => $user->rankBadge(),
             ],
         ];
 

@@ -15,7 +15,7 @@ class AdminInvestmentController extends Controller
     // GET /admin/investments
     public function index(Request $request)
     {
-        $query = InvestmentAccount::with(['user:id,name,email', 'investmentPlan'])->latest();
+        $query = InvestmentAccount::with(['user:id,name,email,investor_rank_id', 'user.investorRank', 'investmentPlan'])->latest();
 
         if ($request->filled('status')) {
             $query->where('status', $request->status);
@@ -40,7 +40,7 @@ class AdminInvestmentController extends Controller
     // GET /admin/investments/{investment}
     public function show(Request $request, InvestmentAccount $investment)
     {
-        $investment->load(['user', 'investmentPlan']);
+        $investment->load(['user.investorRank', 'investmentPlan']);
         $data = ['investment' => $this->formatInvestment($investment)];
 
         if ($request->expectsJson()) {
@@ -50,16 +50,22 @@ class AdminInvestmentController extends Controller
     }
 
     // POST /admin/investments/{investment}/complete
-    public function complete(Request $request, InvestmentAccount $investment)
+    public function complete(Request $request, InvestmentAccount $investment, \App\Services\InvestmentSettlementService $settlement)
     {
-        $investment->update([
-            'status' => 'completed',
-        ]);
+        // Locked + idempotent: only an ACTIVE investment can be completed, and profit is credited
+        // exactly once. (Previously this updated and credited unconditionally, so a second click —
+        // or a cancelled investment — paid the profit again.)
+        $result = $settlement->complete($investment, 'admin', Auth::id());
 
-        // Credit profit to user's balance
-        $user = $investment->user;
-        if ($user) {
-            $user->increment('balance', $investment->expected_profit ?? 0);
+        if (!$result['completed']) {
+            $message = $result['reason'] === 'not_found'
+                ? 'Investment not found.'
+                : 'Only active investments can be completed. This investment is already ' . str_replace('status_', '', $result['reason']) . '; nothing was credited.';
+
+            if ($request->expectsJson()) {
+                return response()->json(['message' => $message], 422);
+            }
+            return back()->with('error', $message);
         }
 
         if ($request->expectsJson()) {
@@ -278,6 +284,7 @@ class AdminInvestmentController extends Controller
                 'id'    => $i->user->id ?? null,
                 'name'  => $i->user->name ?? 'Unknown',
                 'email' => $i->user->email ?? '',
+                'rank'  => $i->user?->rankBadge(),   // read-only classification label (null = unranked)
             ],
         ];
     }

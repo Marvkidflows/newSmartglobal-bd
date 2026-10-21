@@ -50,8 +50,18 @@ class InvestorTaskController extends Controller
             'expired'   => $assignments->where('status', 'expired')->count(),
         ];
 
+        $me = Auth::user()->loadMissing('investorRank');
+
         return response()->json([
             'balance' => $balance,
+            // Read-only identity + authoritative rank, resolved server-side on every load,
+            // so the badge on the task list/history can never be stale or client-supplied.
+            'investor' => [
+                'id'         => $me->id,
+                'name'       => $me->name ?? $me->full_name,
+                'account_id' => $me->account_id,
+                'rank'       => $me->rankBadge(),
+            ],
             'tasks'   => $assignments->map(fn($a) => $this->formatAssignment($a, detailed: true)),
             'summary' => $summary,
         ]);

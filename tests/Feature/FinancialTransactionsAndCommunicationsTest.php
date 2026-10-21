@@ -161,7 +161,7 @@ class FinancialTransactionsAndCommunicationsTest extends TestCase
     {
         $dep = $this->makeDeposit($this->investor, 'pending', 500);
 
-        $this->fin()->postJson("/api/financial/deposits/{$dep->id}/approve")->assertOk();
+        $this->fin()->postJson("/api/financial/deposits/{$dep->id}/approve", ['confirm_usd' => true, 'reason' => 'Received in USD (explicit attestation in test)'])->assertOk();
 
         $this->assertSame('approved', $dep->fresh()->status);
         $this->assertEquals(1500, $this->investor->fresh()->balance);
@@ -193,7 +193,7 @@ class FinancialTransactionsAndCommunicationsTest extends TestCase
     public function test_double_approval_is_rejected_and_audited_once(): void
     {
         $dep = $this->makeDeposit($this->investor, 'pending');
-        $this->fin()->postJson("/api/financial/deposits/{$dep->id}/approve")->assertOk();
+        $this->fin()->postJson("/api/financial/deposits/{$dep->id}/approve", ['confirm_usd' => true, 'reason' => 'Received in USD (explicit attestation in test)'])->assertOk();
         $this->fin()->postJson("/api/financial/deposits/{$dep->id}/approve")->assertStatus(422);
 
         $this->assertSame(1, FinancialAuditLog::where('action', 'deposit.approved')->count());
@@ -289,7 +289,13 @@ class FinancialTransactionsAndCommunicationsTest extends TestCase
     {
         $this->fin()->postJson("/api/admin/users/{$this->investor->id}/balance", ['type' => 'add', 'amount' => 999, 'reason' => 'x'])->assertStatus(403);
         $this->fin()->postJson("/api/admin/users/{$this->investor->id}/freeze")->assertStatus(403);
+        // Role gate runs before model binding, so a financial user gets 403 whether or not the id exists
+        // (no 404-vs-403 oracle for enumerating investments).
         $this->fin()->postJson('/api/admin/investments/1/countdown/extend', ['days' => 5])->assertStatus(403);
+        $inv = $this->makeInvestment($this->investor);
+        $endBefore = $inv->fresh()->end_date->toDateString();
+        $this->fin()->postJson("/api/admin/investments/{$inv->id}/countdown/extend", ['days' => 5])->assertStatus(403);
+        $this->assertSame($endBefore, $inv->fresh()->end_date->toDateString());
         $this->fin()->postJson('/api/financial/investments/1/countdown/extend', ['days' => 5])->assertStatus(404);
     }
 
@@ -368,7 +374,7 @@ class FinancialTransactionsAndCommunicationsTest extends TestCase
     public function test_audit_log_endpoint_is_read_only_filterable_and_role_gated(): void
     {
         $dep = $this->makeDeposit($this->investor);
-        $this->fin()->postJson("/api/financial/deposits/{$dep->id}/approve")->assertOk();
+        $this->fin()->postJson("/api/financial/deposits/{$dep->id}/approve", ['confirm_usd' => true, 'reason' => 'Received in USD (explicit attestation in test)'])->assertOk();
 
         $res = $this->fin()->getJson("/api/financial/audit-logs?investor_id={$this->investor->id}&action=deposit")->assertOk();
         $this->assertSame('deposit.approved', $res->json('data.0.action'));
@@ -621,7 +627,7 @@ class FinancialTransactionsAndCommunicationsTest extends TestCase
 
         // admin approves a deposit through the admin route: still works + audited under admin
         $dep = $this->makeDeposit($this->investor, 'pending', 100);
-        $this->actingAs($this->admin, 'sanctum')->postJson("/api/admin/deposits/{$dep->id}/approve")->assertOk();
+        $this->actingAs($this->admin, 'sanctum')->postJson("/api/admin/deposits/{$dep->id}/approve", ['confirm_usd' => true, 'reason' => 'Received in USD (explicit attestation in test)'])->assertOk();
         $this->assertSame('admin', FinancialAuditLog::where('action', 'deposit.approved')->first()->department);
     }
 }

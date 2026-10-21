@@ -22,12 +22,22 @@ class Deposit extends Model
         'processed_at',
         'processed_by',
         'held_at',
+        // Actual-payment record (written only by DepositPaymentService / the investor's declaration at confirm).
+        'paid_amount', 'paid_currency', 'fx_rate', 'rate_source', 'rate_date', 'approved_amount',
+        'external_reference', 'funding_channel', 'payment_note', 'payment_verified_by', 'payment_verified_at', 'payment_date', 'amount_difference_acknowledged',
     ];
 
     protected $casts = [
         'amount'       => 'decimal:2',
         'processed_at' => 'datetime',
         'held_at'      => 'datetime',
+        'paid_amount'  => 'decimal:2',
+        'fx_rate'      => 'decimal:10',
+        'approved_amount' => 'decimal:2',
+        'rate_date'    => 'date',
+        'payment_date' => 'date',
+        'amount_difference_acknowledged' => 'boolean',
+        'payment_verified_at' => 'datetime',
     ];
 
     // ── RELATIONSHIPS ──────────────────────────────────────────────────────

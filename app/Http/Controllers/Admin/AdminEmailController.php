@@ -70,7 +70,7 @@ class AdminEmailController extends Controller
     {
         $q = trim((string) $request->get('q'));
 
-        $query = User::where('role', 'investor');
+        $query = User::where('role', 'investor')->with('investorRank');
 
         if ($q !== '') {
             $query->where(fn($w) => $w->where('name', 'like', "%$q%")
@@ -82,6 +82,7 @@ class AdminEmailController extends Controller
             ->map(fn($u) => [
                 'id'     => $u->id,
                 'name'   => $u->name ?? $u->full_name,
+                'rank'   => $u->rankBadge(),
                 'email'  => $u->email,
                 'status' => $u->status ?? 'active',
             ]);

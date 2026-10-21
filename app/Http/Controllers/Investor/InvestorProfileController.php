@@ -28,6 +28,8 @@ class InvestorProfileController extends Controller
         $data = [
             'user' => [
                 'id'             => $user->id,
+                'account_id'     => $user->account_id,
+                'rank'           => $user->rankBadge(),
                 'name'           => $user->name ?? $user->full_name,
                 'full_name'      => $user->full_name ?? $user->name,
                 'email'          => $user->email,

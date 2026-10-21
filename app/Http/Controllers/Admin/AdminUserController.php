@@ -24,7 +24,7 @@ class AdminUserController extends Controller
     // GET /admin/users
     public function index(Request $request)
     {
-        $query = User::where('role', 'investor');
+        $query = User::where('role', 'investor')->with('investorRank');
 
         if ($request->filled('search')) {
             $s = $request->search;
@@ -37,6 +37,8 @@ class AdminUserController extends Controller
 
         $users = $query->latest()->get()->map(fn($u) => [
             'id'            => $u->id,
+            'account_id'    => $u->account_id,
+            'rank'          => $u->rankBadge(),
             'name'          => $u->name ?? $u->full_name,
             'email'         => $u->email,
             'phone'         => $u->phone ?? null,
@@ -111,6 +113,8 @@ class AdminUserController extends Controller
         $data = [
             'user' => [
                 'id'             => $user->id,
+                'account_id'     => $user->account_id,
+                'rank'           => $user->rankBadge(),
                 'name'           => $user->name ?? $user->full_name,
                 'email'          => $user->email,
                 'phone'          => $user->phone ?? null,

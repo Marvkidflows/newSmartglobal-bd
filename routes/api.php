@@ -30,6 +30,10 @@ use App\Http\Controllers\Admin\AdminWithdrawalController;
 use App\Http\Controllers\Admin\AdminAnnouncementController;
 use App\Http\Controllers\Admin\AdminAnalyticsController;
 use App\Http\Controllers\Admin\AdminUserController;
+use App\Http\Controllers\Admin\RankManagementController;
+use App\Http\Controllers\Admin\RankCriteriaController;
+use App\Http\Controllers\Admin\RankEvaluationRunController;
+use App\Http\Controllers\Investor\InvestorRankController;
 use App\Http\Controllers\Admin\AdminInvestmentController;
 use App\Http\Controllers\Admin\AdminEmailVerificationController;
 use App\Http\Controllers\Admin\AdminSectorController;
@@ -53,6 +57,7 @@ use App\Http\Controllers\Investor\WithdrawalPinController;
 
 // Financial Team
 use App\Http\Controllers\Financial\FinancialInvestorController;
+use App\Http\Controllers\Financial\CurrencyVerificationController;
 use App\Http\Controllers\Financial\FinancialTransactionController;
 use App\Http\Controllers\Financial\FinancialMessageController;
 use App\Http\Controllers\Financial\FinancialNoticeController;
@@ -84,6 +89,12 @@ Route::post('/reset-password', [PasswordResetController::class, 'resetPassword']
 | third-party provider on a cache miss.
 |--------------------------------------------------------------------------
 */
+// Telegram → us. PUBLIC by necessity (Telegram's servers cannot log in), so it is protected by Telegram's secret-token
+// header and disabled unless TELEGRAM_WEBHOOK_SECRET is set. It only forwards investor messages to staff; it can
+// never approve or change a deposit. (It used to sit inside the authenticated investor group, where Telegram could not reach it.)
+Route::post('/telegram/webhook', [TelegramWebhookController::class, 'handle'])
+    ->middleware([\App\Http\Middleware\VerifyTelegramWebhook::class, 'throttle:120,1'])->name('telegram.webhook');
+
 Route::middleware('throttle:60,1')->prefix('market')->name('market.')->group(function () {
     Route::get('/overview',      [\App\Http\Controllers\MarketController::class, 'overview'])->name('overview');
     Route::get('/assets',        [\App\Http\Controllers\MarketController::class, 'index'])->name('assets.index');
@@ -130,6 +141,9 @@ Route::middleware('auth:sanctum')->group(function () {
             // both sit at stage 1. RegisterPage uses this to resume at
             // the OTP screen vs the Stage 2 form correctly.
             'email_verified' => (bool) $user->email_verified_at,
+            // Investor rank badge (null = unranked). Backend-authoritative.
+            'rank'           => $user->role === 'investor' ? $user->rankBadge() : null,
+            'account_id'     => $user->role === 'investor' ? $user->account_id : null,
         ]);
     });
 
@@ -166,6 +180,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/dashboard', [InvestorDashboardController::class, 'dashboard'])
             ->name('dashboard');
         
+        Route::get('/rank', [InvestorRankController::class, 'show'])->name('rank.show');
         Route::get('/notifications',                      [NotificationController::class, 'index'])
             ->name('notifications.index');
         Route::post('/notifications/{notification}/read', [NotificationController::class, 'markAsRead'])
@@ -201,9 +216,9 @@ Route::get('/investor/investments/create/{plan}',       [InvestorInvestmentContr
 Route::post('/investor/investments',                    [InvestorInvestmentController::class, 'store'])->name('investments.store');
 Route::get('/investor/investments/{investmentAccount}', [InvestorInvestmentController::class, 'show'])->name('investments.show');
 
-Route::post('/telegram/webhook', [TelegramWebhookController::class, 'handle']);
 // ── Deposits ──
 Route::get('/investor/deposits',                    [InvestorDepositController::class, 'index'])->name('deposits.index');
+Route::get('/investor/deposits/currencies',          [InvestorDepositController::class, 'currencies'])->name('deposits.currencies');
 Route::get('/investor/deposits/create',             [InvestorDepositController::class, 'create'])->name('deposits.create');
 Route::post('/investor/deposits/initiate',          [InvestorDepositController::class, 'initiate'])->name('deposits.initiate');
 Route::put('/investor/deposits/{deposit}/confirm',  [InvestorDepositController::class, 'confirm'])->name('deposits.confirm');
@@ -265,6 +280,46 @@ Route::get('/investor/deposits/{deposit}',          [InvestorDepositController::
 
         Route::get('/dashboard', [AdminDashboardController::class, 'dashboard'])
             ->name('dashboard');
+
+        // ── Investor Rank & Badge management ───────────────────────────────
+        // Authorization is enforced by Gates (ranks.*) inside the controllers.
+        Route::prefix('ranks')->name('ranks.')->group(function () {
+            Route::get('/',                          [RankManagementController::class, 'overview'])->name('overview');
+            Route::get('/investors',                 [RankManagementController::class, 'investors'])->name('investors');
+            Route::get('/investors/{user}',          [RankManagementController::class, 'show'])->whereNumber('user')->name('investors.show');
+            Route::post('/investors/{user}/assign',  [RankManagementController::class, 'assign'])->whereNumber('user')->middleware('throttle:30,1')->name('investors.assign');
+            Route::post('/investors/{user}/downgrade', [RankManagementController::class, 'downgrade'])->whereNumber('user')->middleware('throttle:30,1')->name('investors.downgrade');
+
+            Route::get('/reviews',                   [RankManagementController::class, 'reviews'])->name('reviews');
+            Route::post('/reviews/{review}/retain',  [RankManagementController::class, 'retainReview'])->whereNumber('review')->middleware('throttle:30,1')->name('reviews.retain');
+
+            Route::get('/audit',                     [RankManagementController::class, 'audit'])->name('audit');
+            Route::get('/alerts',                    [RankManagementController::class, 'alerts'])->name('alerts');
+            Route::post('/alerts/retry',             [RankManagementController::class, 'retryAlerts'])->middleware('throttle:10,1')->name('alerts.retry');
+
+            // Criteria (static paths BEFORE the {criterion} wildcard routes)
+            Route::get('/criteria/schema',           [RankCriteriaController::class, 'schema'])->name('criteria.schema');
+            Route::get('/criteria/history',          [RankCriteriaController::class, 'history'])->name('criteria.history');
+            Route::post('/criteria/validate',        [RankCriteriaController::class, 'validateOnly'])->middleware('throttle:60,1')->name('criteria.validate');
+            Route::post('/criteria/preview',         [RankCriteriaController::class, 'preview'])->middleware('throttle:20,1')->name('criteria.preview');
+            Route::get('/criteria',                  [RankCriteriaController::class, 'index'])->name('criteria.index');
+            Route::post('/criteria',                 [RankCriteriaController::class, 'store'])->middleware('throttle:30,1')->name('criteria.store');
+            Route::put('/criteria/{criterion}',      [RankCriteriaController::class, 'update'])->whereNumber('criterion')->middleware('throttle:30,1')->name('criteria.update');
+            Route::post('/criteria/{criterion}/activate',   [RankCriteriaController::class, 'activate'])->whereNumber('criterion')->middleware('throttle:30,1')->name('criteria.activate');
+            Route::post('/criteria/{criterion}/deactivate', [RankCriteriaController::class, 'deactivate'])->whereNumber('criterion')->middleware('throttle:30,1')->name('criteria.deactivate');
+            Route::delete('/criteria/{criterion}',   [RankCriteriaController::class, 'destroy'])->whereNumber('criterion')->middleware('throttle:30,1')->name('criteria.destroy');
+
+            Route::get('/runs',                      [RankEvaluationRunController::class, 'index'])->name('runs.index');
+            Route::post('/runs',                     [RankEvaluationRunController::class, 'store'])->middleware('throttle:5,1')->name('runs.store');
+            Route::get('/runs/{run}',                [RankEvaluationRunController::class, 'show'])->whereNumber('run')->name('runs.show');
+            Route::post('/runs/{run}/resume',        [RankEvaluationRunController::class, 'resume'])->whereNumber('run')->middleware('throttle:10,1')->name('runs.resume');
+        });
+
+        // Admin notification centre — reuses the SAME controller + `notifications`
+        // table the investor / financial / marvflow dashboards already use.
+        Route::get('/notifications',                      [NotificationController::class, 'index'])->name('notifications.index');
+        Route::post('/notifications/{notification}/read', [NotificationController::class, 'markAsRead'])->name('notifications.read');
+        Route::delete('/notifications/{notification}',    [NotificationController::class, 'destroy'])->name('notifications.destroy');
 
         // MarvFlow Team Dashboard — "Contact Development Team" from the
         // admin side. Own requests only (DevRequestController scopes
@@ -334,6 +389,7 @@ Route::get('/investments/{investment}/countdown/logs',     [AdminInvestmentContr
         Route::post('/deposits/{deposit}/approve', [AdminDepositController::class, 'approve'])->name('deposits.approve');
         Route::post('/deposits/{deposit}/reject',  [AdminDepositController::class, 'reject'])->name('deposits.reject');
         Route::post('/deposits/{deposit}/hold',  [AdminDepositController::class, 'hold'])->name('deposits.hold');
+        Route::post('/deposits/{deposit}/payment-details', [AdminDepositController::class, 'recordPayment'])->name('deposits.payment');
         Route::post('/deposits/{deposit}/notes', [AdminDepositController::class, 'addNote'])->name('deposits.notes');
 
         
@@ -534,6 +590,7 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         Route::post('/deposits/{deposit}/approve', [AdminDepositController::class, 'approve'])->middleware('can:financial.act-on-transactions')->name('deposits.approve');
         Route::post('/deposits/{deposit}/reject',  [AdminDepositController::class, 'reject'])->middleware('can:financial.act-on-transactions')->name('deposits.reject');
         Route::post('/deposits/{deposit}/hold',    [AdminDepositController::class, 'hold'])->middleware('can:financial.act-on-transactions')->name('deposits.hold');
+        Route::post('/deposits/{deposit}/payment-details', [AdminDepositController::class, 'recordPayment'])->middleware('can:financial.act-on-transactions')->name('deposits.payment');
         Route::post('/deposits/{deposit}/notes',   [AdminDepositController::class, 'addNote'])->name('deposits.notes');
 
         // Withdrawals — same reasoning as deposits above.
@@ -550,6 +607,16 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         // being able to alter an investor's investment terms.
         Route::get('/investments',              [AdminInvestmentController::class, 'index'])->name('investments.index');
         Route::get('/investments/{investment}', [AdminInvestmentController::class, 'show'])->name('investments.show');
+
+        // USD verification of investment / deposit amounts (rank thresholds are in USD; amounts carry no currency).
+        // Appends a valuation row + Financial audit entry; never edits the record itself.
+        Route::get('/currency/summary',                          [CurrencyVerificationController::class, 'summary'])->name('currency.summary');
+        Route::get('/currency/records',                          [CurrencyVerificationController::class, 'index'])->name('currency.records');
+        Route::post('/currency/records/{type}/{id}/verify',      [CurrencyVerificationController::class, 'verify'])->whereIn('type', ['investment', 'deposit'])->whereNumber('id')->middleware('throttle:120,1')->name('currency.verify');
+        Route::get('/currency/supported',                        [CurrencyVerificationController::class, 'supported'])->name('currency.supported');
+        Route::get('/currency/rates',                            [CurrencyVerificationController::class, 'rates'])->name('currency.rates');
+        Route::post('/currency/bulk-verify',                     [CurrencyVerificationController::class, 'bulkVerify'])->middleware('throttle:20,1')->name('currency.bulk-verify');
+        Route::post('/currency/bulk-usd',                        [CurrencyVerificationController::class, 'bulkUsd'])->middleware('throttle:20,1')->name('currency.bulk');
 
         // Investor financial records — NOW served by FinancialInvestorController
         // instead of AdminUserController. The admin controller route-binds any

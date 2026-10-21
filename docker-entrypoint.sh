@@ -11,7 +11,7 @@ set -e
 #                dispatched with ->dispatch() (e.g. SendBulkEmailJob from
 #                Email Center's Bulk Send) just sits as "queued" and
 #                never actually sends.
-#   scheduler  — runs scheduled commands from app/Console/Kernel.php
+#   scheduler  — runs scheduled commands defined in routes/console.php (NOT app/Console/Kernel.php — Laravel 12 ignores it)
 #                (investments:update-maturity, gaming:sync-fixtures)
 #                every minute, only. Without this running somewhere,
 #                those never fire either — same class of problem as the

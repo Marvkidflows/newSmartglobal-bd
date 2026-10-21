@@ -75,7 +75,7 @@ class FinancialTeamTest extends TestCase
             ->assertStatus(200);
 
         $response = $this->actingAs($this->financial, 'sanctum')
-            ->postJson("/api/financial/deposits/{$deposit->id}/approve");
+            ->postJson("/api/financial/deposits/{$deposit->id}/approve", ['confirm_usd' => true, 'reason' => 'Received in USD (explicit attestation in test)']);
 
         $response->assertStatus(200);
         $this->assertDatabaseHas('deposits', ['id' => $deposit->id, 'status' => 'approved']);

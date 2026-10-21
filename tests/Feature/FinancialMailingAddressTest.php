@@ -197,6 +197,11 @@ class FinancialMailingAddressTest extends TestCase
                 'address_line_1' => 'X', 'city' => 'Y', 'reason' => 'Unauthorized role attempting a correction.',
             ])->assertStatus(403);
 
+        // actingAs() keeps the user on the auth guard for the rest of the test,
+        // so without this reset the "guest" call below would still be the
+        // marvflow member (-> 403). Same pattern as
+        // FinancialTransactionsAndCommunicationsTest::test_investor_and_guest_cannot_correct_records.
+        $this->app['auth']->forgetGuards();
         $this->postJson("/api/financial/investors/{$this->investor->id}/mailing-address", [
             'address_line_1' => 'X', 'city' => 'Y', 'reason' => 'Guest attempting a correction.',
         ])->assertStatus(401);
@@ -220,8 +225,11 @@ class FinancialMailingAddressTest extends TestCase
         $res = $this->actingAs($this->admin, 'sanctum')->getJson("/api/admin/kyc/{$this->investor->id}")->assertOk();
         // Regression: this previously read the separate, unrelated `address`
         // column (always empty) instead of the actual KYC-submitted address.
-        $this->assertSame('123 Main Street', $res->json('address'));
-        $this->assertSame('Apt 4B', $res->json('address_line_2'));
-        $this->assertSame('100001', $res->json('postal_code'));
+        // The endpoint returns { "submission": {...} } (AdminKyc.jsx reads
+        // res.data.submission), so the fields live under that key.
+        $this->assertSame('123 Main Street', $res->json('submission.address'));
+        $this->assertSame('Apt 4B', $res->json('submission.address_line_2'));
+        $this->assertSame('100001', $res->json('submission.postal_code'));
+        $this->assertSame('Lagos', $res->json('submission.city'));
     }
 }

@@ -12,7 +12,7 @@ class AdminKycController extends Controller
     // GET /admin/kyc
     public function index(Request $request)
     {
-        $query = User::where('role', 'investor')
+        $query = User::where('role', 'investor')->with('investorRank')
             ->whereNotNull('id_document_path');
 
         if ($request->filled('status')) {
@@ -23,6 +23,7 @@ class AdminKycController extends Controller
             return [
                 'id'              => $u->id,
                 'name'            => $u->name ?? $u->full_name,
+                'rank'            => $u->rankBadge(),   // read-only classification label
                 'email'           => $u->email,
                 'id_type'         => $u->id_type,
                 'id_number'       => $u->id_number,
@@ -47,6 +48,7 @@ class AdminKycController extends Controller
         $data = [
             'id'                   => $user->id,
             'name'                 => $user->name ?? $user->full_name,
+            'rank'                 => $user->rankBadge(),   // read-only classification label
             'email'                => $user->email,
             'phone'                => $user->phone,
             'country'              => $user->country,

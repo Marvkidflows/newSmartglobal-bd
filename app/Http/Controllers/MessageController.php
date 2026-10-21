@@ -23,7 +23,7 @@ class MessageController extends Controller
      */
   public function adminIndex(Request $request)
 {
-    $investors = User::where('role', 'investor')->get();
+    $investors = User::where('role', 'investor')->with('investorRank')->get();
     $investorIds = $investors->pluck('id');
 
     $allMessages = Message::whereIn('investor_id', $investorIds)
@@ -48,6 +48,7 @@ class MessageController extends Controller
                 'name'   => $investor->name ?? $investor->full_name,
                 'email'  => $investor->email,
                 'status' => $investor->status ?? 'active',
+                'rank'   => $investor->rankBadge(),
             ],
             'last_message' => $lastMessage ? [
               'body' => mb_substr($lastMessage->body, 0, 80, 'UTF-8') . (mb_strlen($lastMessage->body, 'UTF-8') > 80 ? '…' : ''),
@@ -127,6 +128,7 @@ class MessageController extends Controller
                 'email'   => $investor->email,
                 'balance' => (float) ($investor->balance ?? 0),
                 'status'  => $investor->status ?? 'active',
+                'rank'    => $investor->rankBadge(),
             ],
             'thread' => $thread,
         ];

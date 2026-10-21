@@ -7,6 +7,8 @@ use App\Http\Controllers\Controller;
 use App\Models\Deposit;
 use App\Models\InvestmentPlan;
 use App\Services\TelegramService;
+use App\Services\DepositPaymentService;
+use App\Services\Rank\CurrencyCatalog;
 use App\Services\FinancialNotificationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -46,6 +48,12 @@ class InvestorDepositController extends Controller
             return response()->json(['deposits' => $deposits]);
         }
         return view('investor.deposits.index', compact('deposits'));
+    }
+
+    // GET /investor-investment/investor/deposits/currencies — currency codes the investor may state for their payment
+    public function currencies()
+    {
+        return response()->json(['currencies' => collect(app(CurrencyCatalog::class)->all())->map(fn ($name, $code) => ['code' => $code, 'name' => $name])->values()]);
     }
 
     // GET /investor-investment/investor/deposits/create
@@ -141,7 +149,17 @@ try {
         $validated = $request->validate([
             'payment_method' => ['required', 'string', 'in:bitcoin,ethereum,usdt,bank_transfer'],
             'screenshot'     => ['nullable', 'image', 'max:5120'],
+            // OPTIONAL declaration of how the investor paid. Unverified until SSI personnel record the actual payment;
+            // it never changes the amount, never approves anything and never counts towards a rank.
+            'paid_amount'        => ['nullable', 'numeric', 'gt:0', 'max:1000000000000'],
+            'paid_currency'      => ['nullable', 'string', 'max:8'],
+            'external_reference' => ['nullable', 'string', 'max:120'],
+            'funding_channel'    => ['nullable', 'in:telegram,app,other'],
         ]);
+
+        if (!empty($validated['paid_currency']) && !app(CurrencyCatalog::class)->isSupported($validated['paid_currency'])) {
+            return response()->json(['message' => 'Unsupported currency code.', 'errors' => ['paid_currency' => ['Choose a supported currency code.']]], 422);
+        }
 
         $proofImagePath = $deposit->proof_image;
         if ($request->hasFile('screenshot')) {
@@ -152,6 +170,8 @@ try {
             'payment_method' => $validated['payment_method'],
             'proof_image'    => $proofImagePath,
         ]);
+
+        app(DepositPaymentService::class)->declare($deposit, $validated);
 
         return response()->json([
             'message' => 'Payment confirmed. Awaiting admin approval.',

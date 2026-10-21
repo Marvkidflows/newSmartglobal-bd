@@ -75,9 +75,45 @@ class User extends Authenticatable
         'two_factor_enabled'      => 'boolean',
         'kyc_verified'            => 'boolean',
         'kyc_verified_at'         => 'datetime',
+        'rank_changed_at'         => 'datetime',
     ];
 
     // ── RELATIONSHIPS ──────────────────────────────────────────────────────
+
+// Investor rank — the ONE authoritative reference (users.investor_rank_id).
+// Intentionally absent from $fillable: it can only be written by the rank
+// services, never by a mass-assigned request payload.
+public function investorRank()
+{
+    return $this->belongsTo(InvestorRank::class, 'investor_rank_id');
+}
+
+// Derived, stable investor account identifier (e.g. INVSTR-00012) — the same
+// format the Financial dashboard already displays. Derived from users.id so
+// there is no second identifier to keep in sync.
+public function getAccountIdAttribute(): string
+{
+    return config('ranks.account_prefix', 'INVSTR-')
+        . str_pad((string) $this->id, (int) config('ranks.account_pad', 5), '0', STR_PAD_LEFT);
+}
+
+// Parses "INVSTR-00012" / "invstr12" / "12" back to a user id, or null.
+public static function idFromAccountId(?string $value): ?int
+{
+    if ($value === null) return null;
+    $prefix = preg_quote(config('ranks.account_prefix', 'INVSTR-'), '/');
+    if (preg_match('/^(?:' . $prefix . ')?0*(\d+)$/i', trim($value), $m)) {
+        return (int) $m[1];
+    }
+    return null;
+}
+
+// Badge payload for API responses; null = unranked. Eager-load
+// investorRank on lists to avoid N+1.
+public function rankBadge(): ?array
+{
+    return $this->investorRank?->badge();
+}
 
 public function sendPasswordResetNotification($token)
 {

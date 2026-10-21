@@ -37,6 +37,9 @@ return [
 
    'telegram' => [
     'bot_token'          => env('TELEGRAM_BOT_TOKEN'),
+    // Secret Telegram echoes back in X-Telegram-Bot-Api-Secret-Token (set it via setWebhook's secret_token, 16+ chars).
+    // Unset = the webhook is disabled (fails closed).
+    'webhook_secret'     => env('TELEGRAM_WEBHOOK_SECRET'),
     'chat_id'            => env('TELEGRAM_CHAT_ID'),
     // Financial Team dashboard — optional second Telegram destination.
     // When set, every notify() call (new/approved deposits and

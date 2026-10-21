@@ -27,7 +27,7 @@ class AdminWithdrawalController extends Controller
     // GET /admin/withdrawals
     public function index(Request $request)
     {
-        $query = Withdrawal::with('user:id,name,email')->latest();
+        $query = Withdrawal::with(['user:id,name,email,investor_rank_id', 'user.investorRank'])->latest();
 
         if ($request->filled('status')) {
             $query->where('status', $request->status);
@@ -45,6 +45,7 @@ class AdminWithdrawalController extends Controller
                 'id'    => $w->user->id ?? null,
                 'name'  => $w->user->name ?? 'Unknown',
                 'email' => $w->user->email ?? '',
+                'rank'  => $w->user?->rankBadge(),
             ],
         ]);
 

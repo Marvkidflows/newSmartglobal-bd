@@ -17,7 +17,8 @@ class AdminDashboardController extends Controller
     public function dashboard(Request $request)
     {
         try {
-            $year = now()->year;
+            $year     = now()->year;
+            $monthSql = $this->monthExpression();
 
             // ── STATS ─────────────────────────────────────────────────────
             $totalInvestors     = User::where('role', 'investor')->count();
@@ -35,24 +36,24 @@ class AdminDashboardController extends Controller
                                     ->sum('amount') ?? 0);
 
             // ── MONTHLY CHART DATA — one grouped query per table instead of 48 ──
-            $depositsByMonth = Deposit::selectRaw('MONTH(created_at) as m, SUM(amount) as total')
+            $depositsByMonth = Deposit::selectRaw($monthSql . ' as m, SUM(amount) as total')
                 ->whereYear('created_at', $year)
                 ->groupBy('m')
                 ->pluck('total', 'm');
 
-            $approvedDepositsByMonth = Deposit::selectRaw('MONTH(created_at) as m, SUM(amount) as total')
+            $approvedDepositsByMonth = Deposit::selectRaw($monthSql . ' as m, SUM(amount) as total')
                 ->where('status', 'approved')
                 ->whereYear('created_at', $year)
                 ->groupBy('m')
                 ->pluck('total', 'm');
 
-            $withdrawalsByMonth = Withdrawal::selectRaw('MONTH(created_at) as m, SUM(amount) as total')
+            $withdrawalsByMonth = Withdrawal::selectRaw($monthSql . ' as m, SUM(amount) as total')
                 ->whereYear('created_at', $year)
                 ->groupBy('m')
                 ->pluck('total', 'm');
 
             $investorsByMonth = User::where('role', 'investor')
-                ->selectRaw('MONTH(created_at) as m, COUNT(*) as total')
+                ->selectRaw($monthSql . ' as m, COUNT(*) as total')
                 ->whereYear('created_at', $year)
                 ->groupBy('m')
                 ->pluck('total', 'm');
@@ -71,7 +72,7 @@ class AdminDashboardController extends Controller
 
             // ── PENDING WITHDRAWALS ────────────────────────────────────────
             $pendingWithdrawalList = Withdrawal::where('status', 'pending')
-                ->with('user:id,name,email')
+                ->with(['user:id,name,email,investor_rank_id', 'user.investorRank'])
                 ->latest()
                 ->take(10)
                 ->get()
@@ -85,17 +86,19 @@ class AdminDashboardController extends Controller
                         'id'    => $w->user->id ?? null,
                         'name'  => $w->user->name ?? 'Unknown',
                         'email' => $w->user->email ?? '',
+                        'rank'  => $w->user?->rankBadge(),
                     ],
                 ]);
 
             // ── RECENT INVESTORS ───────────────────────────────────────────
-            $recentInvestors = User::where('role', 'investor')
+            $recentInvestors = User::where('role', 'investor')->with('investorRank')
                 ->latest()
                 ->take(8)
                 ->get()
                 ->map(fn($u) => [
                     'id'            => $u->id,
                     'name'          => $u->name ?? $u->full_name,
+                    'rank'          => $u->rankBadge(),
                     'email'         => $u->email,
                     'balance'       => (float) ($u->balance ?? 0),
                     'status'        => $u->status ?? 'active',
@@ -139,11 +142,31 @@ class AdminDashboardController extends Controller
             return view('admin.dashboard', $data);
 
         } catch (\Throwable $e) {
-            return response()->json([
-                'error' => $e->getMessage(),
-                'file'  => $e->getFile(),
-                'line'  => $e->getLine(),
-            ], 500);
+            // Log the real exception so it is never silently swallowed, but do
+            // not hand server file paths / SQL text to the caller outside debug.
+            report($e);
+
+            return response()->json(
+                config('app.debug')
+                    ? ['error' => $e->getMessage(), 'file' => $e->getFile(), 'line' => $e->getLine()]
+                    : ['error' => 'Unable to load the dashboard.'],
+                500
+            );
         }
+    }
+
+    /**
+     * SQL expression yielding the calendar month (1-12) of created_at for the
+     * active database driver. MONTH() exists in MySQL/MariaDB/SQL Server but
+     * not in SQLite (used by the test suite), which made this endpoint throw
+     * "no such function: MONTH".
+     */
+    private function monthExpression(): string
+    {
+        return match (DB::connection()->getDriverName()) {
+            'sqlite' => "CAST(strftime('%m', created_at) AS INTEGER)",
+            'pgsql'  => 'CAST(EXTRACT(MONTH FROM created_at) AS INTEGER)',
+            default  => 'MONTH(created_at)',
+        };
     }
 }

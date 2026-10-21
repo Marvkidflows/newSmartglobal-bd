@@ -25,11 +25,21 @@ return new class extends Migration
 {
     public function up(): void
     {
+        // MySQL-only raw SQL. Guarded (like the sibling role/status migrations) so the
+        // sqlite test database can migrate; behaviour on MySQL is unchanged.
+        if (DB::connection()->getDriverName() !== 'mysql') {
+            return;
+        }
+
         DB::statement("ALTER TABLE users MODIFY COLUMN role ENUM('admin', 'investor', 'financial', 'marvflow_member', 'marvflow_lead') NOT NULL DEFAULT 'investor'");
     }
 
     public function down(): void
     {
+        if (DB::connection()->getDriverName() !== 'mysql') {
+            return;
+        }
+
         DB::statement("ALTER TABLE users MODIFY COLUMN role ENUM('admin', 'investor', 'financial') NOT NULL DEFAULT 'investor'");
     }
 };
