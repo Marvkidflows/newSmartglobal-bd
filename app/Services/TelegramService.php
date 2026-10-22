@@ -50,13 +50,13 @@ class TelegramService
             ]);
 
             if (!$response->successful()) {
-                Log::warning('Telegram notification failed.', ['response' => $response->body()]);
+                Log::warning('Telegram notification failed.', ['status' => $response->status()]);
                 return false;
             }
 
             return true;
         } catch (\Throwable $e) {
-            Log::warning('Telegram notification exception: ' . $e->getMessage());
+            Log::warning('Telegram notification exception.', ['error' => $this->safeError($e)]);
             return false;
         }
     }
@@ -176,7 +176,7 @@ public function newDeposit(string $investorName, float $amount, string $referenc
 
         if (!$response->successful()) {
             Log::warning('Telegram sendMessage failed.', [
-                'response' => $response->body(),
+                'status' => $response->status(),
             ]);
 
             return false;
@@ -185,7 +185,7 @@ public function newDeposit(string $investorName, float $amount, string $referenc
         return true;
     } catch (\Throwable $e) {
         Log::error('Telegram sendMessage exception.', [
-            'error' => $e->getMessage(),
+            'error' => $this->safeError($e),
         ]);
 
         return false;
@@ -211,4 +211,19 @@ public function forwardInvestorMessage(
 
     return $this->notify($adminMessage);
 }
+
+    /**
+     * Exception text that is safe to write to a log. The bot token is part of every Bot API URL, and HTTP client
+     * exceptions quote the URL, so the raw message must never be logged. Response bodies are not logged either.
+     */
+    private function safeError(\Throwable $e): string
+    {
+        $message = $e->getMessage();
+        if ($this->token) {
+            $message = str_replace($this->token, '[REDACTED]', $message);
+        }
+        $message = preg_replace('#/bot[^/\s]+#', '/bot[REDACTED]', $message) ?? '';
+
+        return get_class($e) . ': ' . mb_substr($message, 0, 300);
+    }
 }

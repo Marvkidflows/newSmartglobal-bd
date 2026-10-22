@@ -14,8 +14,13 @@ use App\Models\UsdValuation;
 use App\Models\User;
 use App\Services\Rank\RankEvaluationService;
 use App\Services\Rank\RankInvestmentLedger;
+use App\Services\TelegramService;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Factory as HttpFactory;
+use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Schema;
 
 class RankTelegramDepositTest extends RankTestCase
 {
@@ -367,6 +372,82 @@ class RankTelegramDepositTest extends RankTestCase
         $this->assertSame(0, InvestmentAccount::count());
         $this->assertSame(0, UsdValuation::count());
         $this->assertSame(0, FinancialAuditLog::where('action', 'deposit.approved')->count());
+    }
+
+    /** @return array<int,string> collects everything written to any log channel while the test runs */
+    protected function captureLogs(array &$logs): void
+    {
+        $this->app['events']->listen(MessageLogged::class, function (MessageLogged $e) use (&$logs) {
+            $logs[] = $e->message . ' ' . json_encode($e->context);
+        });
+    }
+
+    public function test_the_webhook_never_writes_message_text_or_identifiers_to_the_log_but_still_forwards_to_staff(): void
+    {
+        $secret = 'a-long-random-secret-0123456789';
+        config(['services.telegram.webhook_secret' => $secret, 'services.telegram.bot_token' => '123456:LOGTESTTOKEN', 'services.telegram.chat_id' => '-100777']);
+        $logs = [];
+        $this->captureLogs($logs);
+
+        $this->postJson('/api/telegram/webhook', ['update_id' => 9001, 'message' => [
+            'chat' => ['id' => 424242424],
+            'from' => ['id' => 515151515, 'first_name' => 'Zainab', 'last_name' => 'Okafor', 'username' => 'zainab_demo'],
+            'text' => 'PRIVATE-SENTINEL-7731 my transfer reference',
+        ]], ['X-Telegram-Bot-Api-Secret-Token' => $secret])->assertOk();
+
+        $all = implode("\n", $logs);
+        $this->assertNotSame('', $all);   // the request is still traceable...
+        foreach (['PRIVATE-SENTINEL-7731', '424242424', '515151515', 'Zainab', 'Okafor', 'zainab_demo', 'LOGTESTTOKEN', $secret] as $private) {
+            $this->assertStringNotContainsString($private, $all);   // ...but nothing private is in the log
+        }
+        // The intended behaviour is untouched: the message is still forwarded to the staff chat.
+        Http::assertSent(fn ($r) => str_contains($r->url(), '/sendMessage') && str_contains((string) ($r['text'] ?? ''), 'PRIVATE-SENTINEL-7731'));
+    }
+
+    public function test_telegram_send_failures_never_write_the_bot_token_to_the_log(): void
+    {
+        config(['services.telegram.bot_token' => '123456:LOGTESTTOKEN', 'services.telegram.chat_id' => '-100777']);
+        // setUp() installed a catch-all fake, so use a fresh HTTP factory whose only behaviour is a connection failure
+        // whose message quotes the full request URL (as real HTTP client exceptions do).
+        Http::swap(new HttpFactory());
+        Http::fake(function () {
+            throw new ConnectionException('cURL error 6: Could not resolve host for https://api.telegram.org/bot123456:LOGTESTTOKEN/sendMessage');
+        });
+        $logs = [];
+        $this->captureLogs($logs);
+
+        $telegram = new TelegramService();
+        $this->assertFalse($telegram->sendMessage(-100777, 'hello'));
+        $this->assertFalse($telegram->notify('hello'));
+
+        $all = implode("\n", $logs);
+        $this->assertNotSame('', $all);   // the failure IS logged...
+        $this->assertStringNotContainsString('LOGTESTTOKEN', $all);   // ...without the token
+    }
+
+    public function test_the_unique_index_migration_refuses_over_existing_duplicates_and_changes_no_records(): void
+    {
+        $u = $this->investor(); $d = $this->pending($u);
+        // Simulate a database from before the index existed that already holds a doubly-linked deposit.
+        Schema::table('investment_accounts', fn ($t) => $t->dropUnique('investment_accounts_source_deposit_id_unique'));
+        $row = ['user_id' => $u->id, 'investment_plan_id' => $this->plan->id, 'amount' => 1, 'source_deposit_id' => $d->id, 'status' => 'active',
+            'start_date' => now()->toDateString(), 'end_date' => now()->addDays(30)->toDateString()];
+        InvestmentAccount::create($row);
+        InvestmentAccount::create($row);
+        $this->assertSame(2, InvestmentAccount::count());
+
+        $migration = require database_path('migrations/2026_10_21_100001_harden_deposit_payment_verification.php');
+        try {
+            $migration->up();
+            $this->fail('The migration should refuse to run over a deposit that already has two investments.');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString("deposit #{$d->id}", $e->getMessage());
+            $this->assertStringContainsString('NO DATA WAS CHANGED', $e->getMessage());
+        }
+
+        // Nothing was deleted or rewritten, and the index was not half-applied.
+        $this->assertSame(2, InvestmentAccount::where('source_deposit_id', $d->id)->count());
+        $this->assertFalse(Schema::hasIndex('investment_accounts', 'investment_accounts_source_deposit_id_unique'));
     }
 
     public function test_the_approved_amount_must_follow_from_the_paid_amount_and_rate(): void

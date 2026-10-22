@@ -16,7 +16,12 @@ class TelegramWebhookController extends Controller
     {
         $update = $request->all();
 
-        Log::info('Telegram webhook received', $update);
+        // Privacy: never log the update body. It contains the investor's message text, Telegram user/chat IDs,
+        // name and username. Log only a non-identifying marker so webhook traffic can still be traced.
+        Log::info('Telegram webhook received', [
+            'update_id'   => is_scalar($update['update_id'] ?? null) ? $update['update_id'] : null,
+            'has_message' => isset($update['message']),
+        ]);
 
         $message = $update['message'] ?? null;
 
