@@ -181,6 +181,7 @@ Route::middleware('auth:sanctum')->group(function () {
             ->name('dashboard');
         
         Route::get('/rank', [InvestorRankController::class, 'show'])->name('rank.show');
+        Route::get('/rank/criteria', [InvestorRankController::class, 'criteria'])->name('rank.criteria');
         Route::get('/notifications',                      [NotificationController::class, 'index'])
             ->name('notifications.index');
         Route::post('/notifications/{notification}/read', [NotificationController::class, 'markAsRead'])
