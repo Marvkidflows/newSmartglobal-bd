@@ -76,6 +76,7 @@ use App\Http\Controllers\Financial\FinancialEmailController;
 |--------------------------------------------------------------------------
 */
 Route::post('/register/stage1', [RegisterController::class, 'submitStage1'])->middleware('throttle:10,1');
+Route::get('/privacy-policy', [\App\Http\Controllers\PrivacyPolicyController::class, 'show'])->middleware('throttle:60,1');
 Route::post('/login',           [LoginController::class, 'login'])->middleware('throttle:8,1');
 Route::post('/forgot-password', [PasswordResetController::class, 'forgotPassword'])->middleware('throttle:3,1');
 Route::post('/reset-password', [PasswordResetController::class, 'resetPassword'])->middleware('throttle:5,1');

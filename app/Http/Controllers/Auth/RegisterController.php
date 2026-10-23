@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Services\OtpService;
 use App\Services\PhoneNumberService;
+use App\Services\PrivacyPolicyService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
@@ -16,11 +17,13 @@ class RegisterController extends Controller
 {
     protected OtpService $otpService;
     protected PhoneNumberService $phoneService;
+    protected PrivacyPolicyService $privacyPolicy;
 
-    public function __construct(OtpService $otpService, PhoneNumberService $phoneService)
+    public function __construct(OtpService $otpService, PhoneNumberService $phoneService, PrivacyPolicyService $privacyPolicy)
     {
         $this->otpService = $otpService;
         $this->phoneService = $phoneService;
+        $this->privacyPolicy = $privacyPolicy;
     }
 
     // =========================================================================
@@ -42,7 +45,10 @@ class RegisterController extends Controller
             'phone'        => ['required', 'string', 'max:20'],
             'password'     => ['required', 'min:8', 'confirmed'],
             'referral_code'=> ['nullable', 'string', 'max:20'],
-        ]);
+            // Data Privacy Policy acknowledgement (enforced server-side when
+            // config('privacy.acknowledgement_required') is true). Kept
+            // separate from any marketing consent — there is none here.
+        ] + $this->privacyPolicy->rules(), $this->privacyPolicy->messages());
 
         $phone = $this->phoneService->validateAndNormalize(
             $validated['phone'],
@@ -76,6 +82,7 @@ class RegisterController extends Controller
                 'country'      => $phone['country_name'],
                 'password'     => Hash::make($validated['password']),
             ]);
+            $this->privacyPolicy->record($existing, $validated);
 
             $emailSent = true;
             try {
@@ -122,6 +129,7 @@ class RegisterController extends Controller
             'registration_completed'  => false,
             'status'                  => 'active',
         ]);
+        $this->privacyPolicy->record($user, $validated);
 
         try {
             app(\App\Services\TelegramService::class)->newRegistration(

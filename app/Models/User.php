@@ -76,6 +76,7 @@ class User extends Authenticatable
         'kyc_verified'            => 'boolean',
         'kyc_verified_at'         => 'datetime',
         'rank_changed_at'         => 'datetime',
+        'privacy_policy_acknowledged_at' => 'datetime',
     ];
 
     // ── RELATIONSHIPS ──────────────────────────────────────────────────────
