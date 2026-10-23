@@ -51,7 +51,7 @@ The existing `docker-entrypoint.sh` already runs `migrate --force` for the `web`
 | `RANKS_NOTIFICATION_STALE_MINUTES` | `10` | A `pending` alert older than this is treated as stuck and retried |
 | `RANKS_REQUIRE_ACTIVE_ACCOUNT` | `true` | Prerequisite for **every** rank grant (automatic and manual): `users.status = active`. |
 | `RANKS_REQUIRE_VERIFIED_KYC` | `true` | Prerequisite for every rank grant: KYC approved **and** `kyc_verified`. The platform's only verification mechanism; Management to confirm whether other compliance rules exist (§9). |
-| `RANKS_CURRENCY_CONFIRMED` | `false` | **Activation gate for money criteria.** Management's thresholds are in USD and each record's USD value is verified individually (§11). While `false`, criteria that use a money amount can be saved as drafts but **cannot be activated**, and the engine ignores any such criterion. Set `true` only after Management confirms the currency handling is verified end-to-end (the Currency review queue worked, §11). Criteria on cycles, KYC, account age etc. are unaffected. |
+| `RANKS_CURRENCY_POLICY_SEPARATE_CONFIRMER` | `true` | The person who confirms the currency policy must differ from the person who reviewed it (separation of duties). **Management decision** — turn off only if a single person may do both. (The former the confirmed currency policy (Investor Ranks → Currency policy) flag was **removed**: money criteria are unlocked in the app under *Investor Ranks → Currency policy*, never by editing `.env`.) |
 | `RANKS_DUPLICATE_WINDOW_SECONDS` | `60` | An investment created within this many seconds of an earlier one with the same investor, plan, amount and start date is treated as a double-submit duplicate and excluded until Financial confirms it. |
 | `RANKS_RATE_DEVIATION_PERCENT` | `20` | A typed exchange rate that differs from the most recent recorded rate for the **same currency** by more than this percent is flagged; the person must tick an acknowledgement before it saves (§12). |
 | `RANKS_RATE_DATE_TOLERANCE_DAYS` | `7` | A rate date more than this many days from the record's creation date is flagged the same way (§12). |
@@ -274,7 +274,7 @@ The page also shows the eligibility **prerequisites** (active + verified) that a
 
 **Open items (need Management or Financial — none has been guessed):**
 
-1. **Existing data is unverified.** Every current investment and deposit has no valuation, so it counts as **$0** and sits in the Currency queue. Money criteria cannot go live until Financial has worked the queue (§11) and Management signs off (`RANKS_CURRENCY_CONFIRMED`).
+1. **Existing data is unverified.** Every current investment and deposit has no valuation, so it counts as **$0** and sits in the Currency queue. Money criteria cannot go live until Financial has worked the queue (§11) and Management signs off (the confirmed currency policy (Investor Ranks → Currency policy)).
 2. **Currency of the wallet and of plan limits is not recorded anywhere.** Wallet-funded investments are handled by the same per-record verification, so Financial's statement of each record's currency is what counts.
 3. **Pre-existing behaviour worth Financial's confirmation (not changed by this work):** approving a deposit **credits the wallet and also creates an investment of the same amount**, with no link back to the deposit and no wallet deduction; the investor can then invest wallet balance again. So "total invested" can exceed money actually paid in. If that is not intended it affects what the thresholds mean.
 4. **Duplicate rule** (same investor/plan/amount/start date within 60 s) is a safeguard for the wallet-funded path, which has no lock or idempotency key (also pre-existing). Please confirm it is acceptable; `RANKS_DUPLICATE_WINDOW_SECONDS` adjusts it.
@@ -289,7 +289,7 @@ The page also shows the eligibility **prerequisites** (active + verified) that a
 
 | Decision | Implementation | Status |
 |---|---|---|
-| Ranking currency is **USD**; never assume a stored number is USD; use verified USD, or a recorded rate with the original preserved; flag unknown/missing-rate records; do not activate affected criteria until verified | `usd_valuations` (append-only; original amount + currency + rate + source + date + computed USD + who). Engine uses **only** verified values; unknown/stale records add $0 and are listed in the Currency queue; money criteria are locked behind `RANKS_CURRENCY_CONFIRMED`. | Code + tests written, **not run** |
+| Ranking currency is **USD**; never assume a stored number is USD; use verified USD, or a recorded rate with the original preserved; flag unknown/missing-rate records; do not activate affected criteria until verified | `usd_valuations` (append-only; original amount + currency + rate + source + date + computed USD + who). Engine uses **only** verified values; unknown/stale records add $0 and are listed in the Currency queue; money criteria are locked behind the confirmed currency policy (Investor Ranks → Currency policy). | Code + tests written, **not run** |
 | A new investment counts as a separate cycle only with its own record; wallet-funded and post-completion reinvestments may count; edits/extensions add nothing; exclude cancelled and duplicates; one investment counted once | Ledger counts each record once; funding source ignored; no reinvestment marker invented; cancelled and duplicate-looking records excluded; one valuation (the newest) per record. | Code + tests written, **not run** |
 | Early Admin completion does not count until the end date; completed + positive amount + end reached; no exception; do not modify financial completion/payout | Both recorded and plan-scheduled end must have passed. `complete()` / maturity logic untouched by this work. | Code + tests written, **not run** |
 | Amount = cumulative non-cancelled; corrections via the audited Financial process | Only the audited `correctInvestment` edits an amount; a correction makes the valuation **stale** and returns the record to review. | Code + tests |
@@ -313,16 +313,16 @@ Standing requirements: all six proposed rules stay **inactive** (the loader crea
 4. A duplicate-looking record stays excluded until you tick **"I have confirmed this is a separate, genuine investment"** while verifying it.
 5. Every verification is append-only, written to the **Financial audit log**, and **re-evaluates that investor**. It **never edits the investment, deposit or any balance.**
 
-**Roll-out order (production):** `php artisan migrate --force` → Financial works the queue until *Needs review* is empty (or Management explicitly accepts the exclusions) → Management confirms the currency handling **in writing** → set `RANKS_CURRENCY_CONFIRMED=true` → an Admin previews, then activates the approved criteria in the dashboard (**highest rank first**). Until then production has no active criteria.
+**Roll-out order (production):** `php artisan migrate --force` → Financial works the queue (or Management decides to accept the exclusions) → in the app, **Investor Ranks → Currency policy**: the Financial Team records its review, then an Administrator (a different person by default) confirms it for Management → an Admin previews, then activates the approved criteria in the dashboard (**highest rank first**). Until the policy is confirmed, production has no active money criteria. See §12.6.
 
 ### To use the proposed rules in a development database
 ```powershell
 php artisan ranks:load-proposed                       # six inactive drafts — always allowed
-# to ACTIVATE in dev, set in your LOCAL .env:  RANKS_CURRENCY_CONFIRMED=true   (dev only!)
+# to ACTIVATE in dev: in the app, have a Financial user record the review and a DIFFERENT admin confirm it (Investor Ranks → Currency policy)
 php artisan config:clear
 php artisan ranks:load-proposed --activate
 ```
-Money criteria only count records with a verified USD value, so in dev also verify some records (Currency tab) or the totals will be $0. **Never** set `RANKS_CURRENCY_CONFIRMED=true` in production until Management confirms.
+Money criteria only count records with a verified USD value, so in dev also verify some records (Currency tab) or the totals will be $0. The currency policy is never confirmed automatically — not by migrations, seeders or commands.
 
 ---
 
@@ -354,7 +354,7 @@ Management's thresholds are **unchanged and are in USD** (Bronze 100 + 1 cycle �
 
 ### 12.5 Development demonstration (proposed criteria active, controlled test data)
 ```powershell
-# LOCAL .env only:  APP_ENV=local   RANKS_CURRENCY_CONFIRMED=true      (never in production)
+# LOCAL .env only:  APP_ENV=local   (then confirm the currency policy in the app: Financial review + a different Admin's confirmation)
 php artisan config:clear
 php artisan ranks:load-proposed --activate     # six PROPOSED, unapproved rules
 php artisan ranks:demo-data --evaluate         # 7 labelled demo investors + a table of expected vs reached rank
@@ -401,3 +401,20 @@ Only **approved** deposits/investments with a **verified USD value** count. Pend
 3. Other wallet screens (invest-from-wallet, withdrawals, plans) are USD-denominated by design; only the deposit flow was made multi-currency.
 4. The webhook must be registered with Telegram (secret token) before it receives anything.
 5. Not run here: the real `npm run build` (registry unreachable) and MySQL (not installed). See the final report for what was run instead.
+
+
+### 12.6 Currency policy (unlocking money-based criteria)
+
+Money-based criteria (`total_invested`, `active_investment_amount`, `total_approved_deposits`) can be saved as drafts at any time, but can only be **activated** while a currency policy is confirmed. The confirmation lives in the database (`rank_currency_policies`), is versioned, attributable and audited — it is **not** an `.env` setting.
+
+| Step | Who | Where | Gate |
+|---|---|---|---|
+| 1. Review the rules and the review queue | Financial Team or Admin | Financial → Currency verification, or Investor Ranks → Currency policy | `financial.review-currency-policy` |
+| 2. Confirm on behalf of Management, choosing how unverified records are treated | **Admin only**, by default a different person from the reviewer | Investor Ranks → Currency policy | `ranks.confirm-currency-policy` |
+| Withdraw the confirmation | Admin only | same | `ranks.confirm-currency-policy` |
+
+* **Bound to the rules.** The confirmation stores a hash of the rules and the config values they depend on (rate-deviation %, rate-date tolerance, approved-amount tolerance, duplicate window, extra currency codes). If any of them change, the policy shows as *Changed since confirmed* and money criteria lock until re-reviewed and re-confirmed.
+* **Unverified records** — Management chooses at confirmation: *accept that they count as 0* (the exact number must be typed in as acknowledgement) or *require the queue to be cleared* before any money criterion is activated (the activation error then lists the counts and the first affected record ids).
+* **Errors.** An activation refused for currency reasons returns HTTP 422 with `errors.conflicts` (as before) plus `currency_gate.blockers[]` = `{type, message, action{label,path}, details}` — types `currency_unconfirmed`, `currency_pending`, `currency_stale`, `currency_records`.
+* **Audit.** `currency_policy.reviewed / confirmed / revoked` go to `financial_audit_logs`; criteria `activated` history rows for money criteria record `currency_policy_version` / `currency_policy_hash`; activation and deactivation were already logged in `rank_criteria_history`.
+* **Never touched:** investments, deposits, withdrawals, balances, profits and existing investor ranks. Withdrawing the policy does not demote anyone; the engine simply ignores money criteria again.

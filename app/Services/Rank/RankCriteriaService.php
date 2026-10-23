@@ -184,9 +184,19 @@ class RankCriteriaService
             'version' => $criterion->version + 1, 'updated_by' => $actor->id,
         ])->save();
         $criterion->load(['rank', 'conditions']);
-        $this->audit->recordCriteria('activated', $criterion, $actor, $before, $this->audit->criterionSnapshot($criterion), $reason);
+        $this->audit->recordCriteria('activated', $criterion, $actor, $before, $this->audit->criterionSnapshot($criterion) + $this->policyStamp($criterion), $reason);
 
         return $this->evaluation->startRun('criteria_change', $criterion, $actor);
+    }
+
+    /** For money-based criteria: which confirmed currency policy version this activation relied on (audit trail). */
+    protected function policyStamp(RankCriterion $criterion): array
+    {
+        $registry = app(RankFieldRegistry::class);
+        if (!$criterion->conditions->contains(fn ($c) => $registry->isMonetary($c->field))) return [];
+
+        $policy = app(CurrencyPolicyService::class)->current();
+        return $policy ? ['currency_policy_version' => (int) $policy->version, 'currency_policy_hash' => $policy->rules_hash] : [];
     }
 
     protected function lockRank(int $rankId): void
@@ -204,7 +214,20 @@ class RankCriteriaService
             if ($result['conflicts']) {
                 $messages['conflicts'] = array_column($result['conflicts'], 'message');
             }
-            throw ValidationException::withMessages($messages);
+            $exception = ValidationException::withMessages($messages);
+
+            // Currency-policy problems also carry WHAT is missing and WHERE to fix it, so the screen can offer a direct link.
+            $gate = collect($result['conflicts'])->filter(fn ($c) => str_starts_with((string) ($c['type'] ?? ''), 'currency_'))
+                ->map(fn ($c) => array_intersect_key($c, array_flip(['type', 'message', 'action', 'details'])))->values()->all();
+            if ($gate) {
+                $exception->response = response()->json([
+                    'message'       => $exception->getMessage(),
+                    'errors'        => $messages,
+                    'currency_gate' => ['blocked' => true, 'blockers' => $gate],
+                ], 422);
+            }
+
+            throw $exception;
         }
 
         return $result['normalized'];

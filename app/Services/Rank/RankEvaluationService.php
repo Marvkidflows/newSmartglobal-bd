@@ -59,7 +59,7 @@ class RankEvaluationService
      */
     public function usable(RankCriterion $criterion): bool
     {
-        if (config('ranks.currency_confirmed')) return true;
+        if (app(CurrencyPolicyService::class)->isConfirmed()) return true;
 
         $criterion->loadMissing('conditions');
         return !$criterion->conditions->contains(fn ($c) => $this->registry->isMonetary($c->field));

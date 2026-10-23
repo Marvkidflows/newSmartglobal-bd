@@ -8,7 +8,9 @@ namespace Tests\Feature\Rank;
 
 use App\Models\InvestmentAccount;
 use App\Models\InvestorRank;
+use App\Models\RankCurrencyPolicy;
 use App\Models\User;
+use App\Services\Rank\CurrencyPolicyService;
 use App\Services\Rank\UsdValuationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -23,10 +25,31 @@ abstract class RankTestCase extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        // The REAL default is unconfirmed (RANKS_CURRENCY_CONFIRMED=false), which blocks activating money
-        // criteria. The rank tests exercise the engine, so they opt in; RankDecisionsTest covers the gate itself.
-        config(['ranks.currency_confirmed' => true]);
         $this->admin = User::factory()->create(['role' => 'admin', 'status' => 'active']);
+        // The REAL default is "no confirmed currency policy", which blocks activating money criteria. The rank tests
+        // exercise the engine, so they start with a confirmed policy; RankDecisionsTest and RankCurrencyPolicyTest
+        // cover the gate itself (and use withoutCurrencyPolicy()).
+        $this->confirmCurrencyPolicyForTests();
+    }
+
+    /** Test fixture only: a confirmed policy row for the CURRENT rules (no audit rows, no review queue involved). */
+    protected function confirmCurrencyPolicyForTests(string $handling = 'accept_exclusions'): void
+    {
+        $svc = app(CurrencyPolicyService::class);
+        DB::table('rank_currency_policies')->update(['status' => 'superseded']);
+        RankCurrencyPolicy::create([
+            'version' => ((int) DB::table('rank_currency_policies')->max('version')) + 1, 'status' => 'confirmed',
+            'ranking_currency' => 'USD', 'rules' => $svc->rules(), 'rules_hash' => $svc->rulesHash(),
+            'reviewed_by' => $this->admin->id, 'reviewed_by_name' => 'Test fixture', 'reviewed_by_role' => 'admin', 'reviewed_at' => now(), 'review_note' => 'Test fixture',
+            'confirmed_by' => $this->admin->id, 'confirmed_by_name' => 'Test fixture', 'confirmed_by_role' => 'admin', 'confirmed_at' => now(),
+            'confirmation_note' => 'Test fixture', 'unverified_handling' => $handling, 'accepted_review_count' => 0,
+        ]);
+    }
+
+    /** Test fixture only: no policy has ever been confirmed (the real shipped state). */
+    protected function withoutCurrencyPolicy(): void
+    {
+        DB::table('rank_currency_policies')->delete();
     }
 
     /** An active, VERIFIED investor (the rank prerequisites) unless the test overrides it. */

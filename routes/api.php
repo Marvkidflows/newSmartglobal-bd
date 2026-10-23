@@ -58,6 +58,7 @@ use App\Http\Controllers\Investor\WithdrawalPinController;
 // Financial Team
 use App\Http\Controllers\Financial\FinancialInvestorController;
 use App\Http\Controllers\Financial\CurrencyVerificationController;
+use App\Http\Controllers\Financial\CurrencyPolicyController;
 use App\Http\Controllers\Financial\FinancialTransactionController;
 use App\Http\Controllers\Financial\FinancialMessageController;
 use App\Http\Controllers\Financial\FinancialNoticeController;
@@ -76,7 +77,6 @@ use App\Http\Controllers\Financial\FinancialEmailController;
 |--------------------------------------------------------------------------
 */
 Route::post('/register/stage1', [RegisterController::class, 'submitStage1'])->middleware('throttle:10,1');
-Route::get('/privacy-policy', [\App\Http\Controllers\PrivacyPolicyController::class, 'show'])->middleware('throttle:60,1');
 Route::post('/login',           [LoginController::class, 'login'])->middleware('throttle:8,1');
 Route::post('/forgot-password', [PasswordResetController::class, 'forgotPassword'])->middleware('throttle:3,1');
 Route::post('/reset-password', [PasswordResetController::class, 'resetPassword'])->middleware('throttle:5,1');
@@ -294,6 +294,13 @@ Route::get('/investor/deposits/{deposit}',          [InvestorDepositController::
 
             Route::get('/reviews',                   [RankManagementController::class, 'reviews'])->name('reviews');
             Route::post('/reviews/{review}/retain',  [RankManagementController::class, 'retainReview'])->whereNumber('review')->middleware('throttle:30,1')->name('reviews.retain');
+
+            // Currency policy — the confirmation that unlocks money-based criteria (Financial reviews, Admin confirms).
+            Route::get('/currency-policy',           [CurrencyPolicyController::class, 'show'])->name('currency-policy.show');
+            Route::get('/currency-policy/history',   [CurrencyPolicyController::class, 'history'])->name('currency-policy.history');
+            Route::post('/currency-policy/review',   [CurrencyPolicyController::class, 'review'])->middleware('throttle:10,1')->name('currency-policy.review');
+            Route::post('/currency-policy/confirm',  [CurrencyPolicyController::class, 'confirm'])->middleware('throttle:10,1')->name('currency-policy.confirm');
+            Route::post('/currency-policy/revoke',   [CurrencyPolicyController::class, 'revoke'])->middleware('throttle:10,1')->name('currency-policy.revoke');
 
             Route::get('/audit',                     [RankManagementController::class, 'audit'])->name('audit');
             Route::get('/alerts',                    [RankManagementController::class, 'alerts'])->name('alerts');
@@ -612,6 +619,10 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
 
         // USD verification of investment / deposit amounts (rank thresholds are in USD; amounts carry no currency).
         // Appends a valuation row + Financial audit entry; never edits the record itself.
+        // Currency policy (Financial Team side): read it and record the Financial review. Confirmation is Admin-only.
+        Route::get('/currency/policy',                           [CurrencyPolicyController::class, 'show'])->name('currency.policy');
+        Route::get('/currency/policy/history',                   [CurrencyPolicyController::class, 'history'])->name('currency.policy.history');
+        Route::post('/currency/policy/review',                   [CurrencyPolicyController::class, 'review'])->middleware('throttle:10,1')->name('currency.policy.review');
         Route::get('/currency/summary',                          [CurrencyVerificationController::class, 'summary'])->name('currency.summary');
         Route::get('/currency/records',                          [CurrencyVerificationController::class, 'index'])->name('currency.records');
         Route::post('/currency/records/{type}/{id}/verify',      [CurrencyVerificationController::class, 'verify'])->whereIn('type', ['investment', 'deposit'])->whereNumber('id')->middleware('throttle:120,1')->name('currency.verify');

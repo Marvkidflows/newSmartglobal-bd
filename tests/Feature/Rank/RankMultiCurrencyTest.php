@@ -286,11 +286,11 @@ class RankMultiCurrencyTest extends RankTestCase
 
     public function test_demo_command_does_not_activate_criteria_or_open_the_gate_by_itself(): void
     {
-        config(['ranks.currency_confirmed' => false]);
+        $this->withoutCurrencyPolicy();
         $this->artisan('ranks:demo-data')->assertSuccessful();
         $this->assertSame(0, \App\Models\RankCriterion::count());
         $this->artisan('ranks:demo-data --evaluate')->assertFailed();
-        $this->assertFalse((bool) config('ranks.currency_confirmed'));
+        $this->assertFalse(app(\App\Services\Rank\CurrencyPolicyService::class)->isConfirmed());
     }
 
     // ── classification only ─────────────────────────────────────────────────────────

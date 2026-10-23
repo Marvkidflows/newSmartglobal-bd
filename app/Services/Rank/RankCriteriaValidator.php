@@ -103,15 +103,14 @@ class RankCriteriaValidator
                 }
             }
 
-            if ($enforceCurrencyGate && !empty($n['is_active']) && !config('ranks.currency_confirmed')) {
+            if ($enforceCurrencyGate && !empty($n['is_active'])) {
                 $money = collect($conds)->pluck('field')->unique()->filter(fn ($f) => $this->registry->isMonetary($f))
                     ->map(fn ($f) => $this->registry->get($f)['label'])->values();
                 if ($money->isNotEmpty()) {
-                    $conflicts[] = [
-                        'type'    => 'currency_unconfirmed',
-                        'message' => 'Cannot activate: these criteria use a money amount (' . $money->implode(', ') . ') but Management has not yet '
-                            . 'confirmed the currency of the recorded amounts. Save them as a draft; they can be activated once the currency is confirmed.',
-                    ];
+                    // Why it is blocked (and where to fix it) comes from the confirmed currency policy — not from an env flag.
+                    foreach (app(CurrencyPolicyService::class)->blockers($money->all()) as $blocker) {
+                        $conflicts[] = $blocker;
+                    }
                 }
             }
 

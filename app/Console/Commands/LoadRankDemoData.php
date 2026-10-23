@@ -137,14 +137,14 @@ class LoadRankDemoData extends Command
 
         if (!$this->option('evaluate')) {
             $this->line('Next (development only, after Management has confirmed the currency handling in this environment):');
-            $this->line('  1. set RANKS_CURRENCY_CONFIRMED=true in .env, then php artisan config:clear');
+            $this->line('  1. in the app: Investor Ranks → Currency policy — Financial reviews it, a DIFFERENT Administrator confirms it');
             $this->line('  2. php artisan ranks:load-proposed --activate');
             $this->line('  3. php artisan ranks:demo-data --evaluate');
             return self::SUCCESS;
         }
 
-        if (!config('ranks.currency_confirmed')) {
-            $this->error('Not evaluating: RANKS_CURRENCY_CONFIRMED is false, so money criteria cannot be active and the engine ignores them.');
+        if (!app(\App\Services\Rank\CurrencyPolicyService::class)->isConfirmed()) {
+            $this->error('Not evaluating: the currency policy is not confirmed (Investor Ranks → Currency policy), so money criteria cannot be active and the engine ignores them.');
             return self::FAILURE;
         }
         if (!$engine->activeCriteria()->count()) {

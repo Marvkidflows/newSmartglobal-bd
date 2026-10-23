@@ -37,11 +37,17 @@ return [
     'duplicate_window_seconds' => (int) env('RANKS_DUPLICATE_WINDOW_SECONDS', 60),
 
     // ACTIVATION GATE for money criteria. Amounts are stored with no currency, so each record is valued in USD
-    // by a person (UsdValuationService) and only verified values are used. Until Management confirms in writing
-    // that the currency handling has been verified end-to-end (and the review queue has been worked), criteria
-    // that use a money amount can be SAVED AS DRAFTS but cannot be ACTIVATED, and the engine ignores any such
-    // criterion. Set to true ONLY after that confirmation.
-    'currency_confirmed' => (bool) env('RANKS_CURRENCY_CONFIRMED', false),
+    // by a person (UsdValuationService) and only verified values are used. Until the currency policy is CONFIRMED
+    // IN THE APPLICATION (Investor Ranks → Currency policy: Financial review, then Administrator confirmation —
+    // stored, versioned and audited in rank_currency_policies), criteria that use a money amount can be SAVED AS
+    // DRAFTS but cannot be ACTIVATED, and the engine ignores any such criterion.
+    // The former RANKS_CURRENCY_CONFIRMED environment flag has been REMOVED: it needed .env edits and recorded
+    // nobody's decision. Setting it now has no effect. See App\Services\Rank\CurrencyPolicyService.
+    'currency_policy' => [
+        // MANAGEMENT DECISION: must the person who confirms the policy differ from the one who reviewed it?
+        // On by default (separation of duties). Turn off only if Management accepts a single person doing both.
+        'separate_confirmer' => (bool) env('RANKS_CURRENCY_POLICY_SEPARATE_CONFIRMER', true),
+    ],
 
     // PREREQUISITES applied to EVERY rank grant (automatic and manual) in addition to the
     // Admin-configured criteria. Not criteria: they are compliance gates.

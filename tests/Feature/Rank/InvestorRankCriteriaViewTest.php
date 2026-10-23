@@ -64,7 +64,7 @@ class InvestorRankCriteriaViewTest extends RankTestCase
     public function test_money_rule_blocked_by_currency_signoff_is_pending_not_active(): void
     {
         $this->activate('bronze', 100, 1);
-        config(['ranks.currency_confirmed' => false]);
+        $this->withoutCurrencyPolicy();
         $b = collect($this->actingAs($this->investor(), 'sanctum')->getJson(self::URL)->json('ranks'))->firstWhere('key', 'bronze');
         $this->assertSame('pending_currency_approval', $b['status']);
         $this->assertNull($b['min_investment_usd']);

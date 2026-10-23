@@ -71,7 +71,13 @@ class RankManagementController extends Controller
             // Compliance gates applied to every rank grant, in addition to the criteria below.
             'prerequisites'      => $this->eligibility->requirements(),
             'ranking_currency'   => config('ranks.ranking_currency'),
-            'currency_confirmed' => (bool) config('ranks.currency_confirmed'),
+            'currency_confirmed' => app(\App\Services\Rank\CurrencyPolicyService::class)->isConfirmed(),
+            'currency_policy'    => (function () {
+                $svc = app(\App\Services\Rank\CurrencyPolicyService::class);
+                $cur = $svc->current();
+                return ['state' => $svc->state(), 'version' => $cur?->version, 'confirmed_by' => $cur?->confirmed_by_name,
+                        'confirmed_at' => $cur?->confirmed_at?->toIso8601String(), 'unverified_handling' => $cur?->unverified_handling];
+            })(),
             // Records whose USD value is unknown/stale, or that look like duplicates — excluded from ranking until reviewed.
             'currency_review'    => $this->valuations->summary(),
         ]);

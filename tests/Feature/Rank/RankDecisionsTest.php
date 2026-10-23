@@ -23,7 +23,7 @@ class RankDecisionsTest extends RankTestCase
 
     protected function unconfirmed(): void
     {
-        config(['ranks.currency_confirmed' => false]);
+        $this->withoutCurrencyPolicy();
     }
 
     // ── Shipped defaults mirror the decisions ───────────────────────────────────────
@@ -32,7 +32,8 @@ class RankDecisionsTest extends RankTestCase
     {
         $defaults = require config_path('ranks.php');          // the file's own defaults, ignoring test overrides
 
-        $this->assertFalse($defaults['currency_confirmed'], 'currency must start UNCONFIRMED');
+        $this->assertArrayNotHasKey('currency_confirmed', $defaults, 'the .env flag is gone; confirmation lives in the database');
+        $this->assertTrue($defaults['currency_policy']['separate_confirmer'], 'reviewer and confirmer must differ by default');
         $this->assertFalse($defaults['allow_manual_override'], 'manual overrides must start DISABLED');
         $this->assertTrue($defaults['require_active_account']);
         $this->assertTrue($defaults['require_verified_kyc']);
@@ -88,7 +89,7 @@ class RankDecisionsTest extends RankTestCase
         $id = $this->postJson('/api/admin/ranks/criteria',
             $this->payload('bronze', [$this->cond('total_invested', '>=', 100)], ['is_active' => false]))->json('criterion.id');
 
-        config(['ranks.currency_confirmed' => true]);                  // Management confirmed; setting changed
+        $this->confirmCurrencyPolicyForTests();                        // Management confirmed in the app
         $this->postJson("/api/admin/ranks/criteria/{$id}/activate")->assertOk();
         $this->assertTrue(RankCriterion::find($id)->is_active);
     }
@@ -113,7 +114,7 @@ class RankDecisionsTest extends RankTestCase
         $this->engine()->evaluateUser($inv->id);
         $this->assertNull($this->freshRank($inv));                      // qualifies on paper, ignored in practice
 
-        config(['ranks.currency_confirmed' => true]);
+        $this->confirmCurrencyPolicyForTests();
         $this->engine()->evaluateUser($inv->id);
         $this->assertSame('bronze', $this->freshRank($inv));
     }

@@ -42,6 +42,7 @@ public function boot(): void
         'financial.adjust-balance',      // wallet add / deduct only
         'financial.correct-records',     // investment amount / ROI corrections
         'financial.verify-currency',     // record a record's currency + USD value (rank thresholds are in USD)
+        'financial.review-currency-policy', // step 1 of the currency policy: review the rules (Financial Team or Admin)
         'financial.communicate',         // message individual investors
         'financial.issue-notices',       // multi-recipient notices, News Centre notice
         'financial.view-audit',          // read the audit trail
@@ -61,6 +62,7 @@ public function boot(): void
         'ranks.downgrade',       // manually downgrade, retain on review
         'ranks.override',        // exception to configured criteria (also needs RANKS_ALLOW_MANUAL_OVERRIDE)
         'ranks.view-audit',      // rank + criteria audit history
+        'ranks.confirm-currency-policy', // step 2 of the currency policy: confirm / withdraw it (Administrator only)
     ] as $rankAbility) {
         Gate::define($rankAbility, fn (User $user) => $user->role === 'admin');
     }
