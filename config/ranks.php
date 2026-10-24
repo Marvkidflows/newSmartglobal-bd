@@ -6,6 +6,12 @@ return [
     'account_prefix' => env('RANKS_ACCOUNT_PREFIX', 'INVSTR-'),
     'account_pad'    => (int) env('RANKS_ACCOUNT_PAD', 5),
 
+    // APPROVAL WORKFLOW (task §2). true  = the engine only CALCULATES eligibility and raises a pending review;
+    // a rank is awarded only when an authorised Admin / Financial Team member approves it.
+    // false = legacy behaviour (the engine upgrades automatically). Defaults to TRUE: eligibility must not
+    // bypass SSI Management's approval controls. Changing this is a Management decision.
+    'require_approval' => (bool) env('RANKS_REQUIRE_APPROVAL', true),
+
     // MANAGEMENT DECISION: may an Admin manually assign a rank the investor does
     // not currently qualify for (an "authorized override")? Off by default so
     // the configured rules are never bypassed unless Management says so.
@@ -64,4 +70,20 @@ return [
 
     // Pending deliveries older than this are treated as stuck and retried.
     'notification_stale_minutes' => (int) env('RANKS_NOTIFICATION_STALE_MINUTES', 10),
+
+    // MANDATORY CORE REQUIREMENTS from the official SSI Investor Rank & Badge Management Technical Requirements:
+    // every rank needs BOTH a minimum investment amount (USD) AND a minimum number of completed cycles.
+    // band_max is the top of the specified amount band (null = no upper limit). While enforcement is on, a rule that
+    // lacks either requirement, or states different minimums, cannot be activated and is never used to award a rank.
+    // Changing these figures is a Management decision.
+    'enforce_core_requirements' => (bool) env('RANKS_ENFORCE_CORE', true),
+    'core_requirements' => [
+        'bronze'   => ['min_amount' => 100,   'band_max' => 999,   'min_cycles' => 1],
+        'silver'   => ['min_amount' => 1000,  'band_max' => 4999,  'min_cycles' => 2],
+        'gold'     => ['min_amount' => 5000,  'band_max' => 9999,  'min_cycles' => 3],
+        'platinum' => ['min_amount' => 10000, 'band_max' => 19999, 'min_cycles' => 5],
+        'diamond'  => ['min_amount' => 20000, 'band_max' => 49999, 'min_cycles' => 8],
+        'elite'    => ['min_amount' => 50000, 'band_max' => null,  'min_cycles' => 12],
+    ],
+
 ];

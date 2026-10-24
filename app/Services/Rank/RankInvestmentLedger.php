@@ -174,7 +174,7 @@ class RankInvestmentLedger
     }
 
     /** Both the recorded end date AND the plan-scheduled end (start + plan duration) must have been reached. */
-    protected function cycleHasEnded(object $r, Carbon $today): bool
+    public function cycleHasEnded(object $r, Carbon $today): bool
     {
         if (!$r->end_date) return false;
         if (Carbon::parse($r->end_date)->startOfDay()->gt($today)) return false;

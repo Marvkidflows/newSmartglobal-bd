@@ -418,3 +418,97 @@ Money-based criteria (`total_invested`, `active_investment_amount`, `total_appro
 * **Errors.** An activation refused for currency reasons returns HTTP 422 with `errors.conflicts` (as before) plus `currency_gate.blockers[]` = `{type, message, action{label,path}, details}` — types `currency_unconfirmed`, `currency_pending`, `currency_stale`, `currency_records`.
 * **Audit.** `currency_policy.reviewed / confirmed / revoked` go to `financial_audit_logs`; criteria `activated` history rows for money criteria record `currency_policy_version` / `currency_policy_hash`; activation and deactivation were already logged in `rank_criteria_history`.
 * **Never touched:** investments, deposits, withdrawals, balances, profits and existing investor ranks. Withdrawing the policy does not demote anyone; the engine simply ignores money criteria again.
+
+
+---
+
+## 14. Specification-compliance additions (approval workflow, five additional criteria, rank status, export)
+
+Source: *SSI Investor Rank & Badge Management Module — Technical Requirements*. Everything below is **additive**; nothing in §1–§13 was removed.
+
+### 14.0 Verification status (read first)
+
+| Claim | How established | Status |
+|---|---|---|
+| New PHP files are structurally balanced (braces/parens) | Static bracket check over all 42 added/changed PHP files | ✅ Checked (**not** a PHP lint) |
+| New/changed JSX parses | TypeScript parser over 17 changed frontend files; relative imports resolve | ✅ Checked (**not** a build) |
+| **PHP code executes; migration runs; `RankSpecComplianceTest` (23 tests) passes; full suite passes** | The authoring sandbox had **no PHP** | ⛔ **NOT RUN — run `php artisan test --filter=Rank` then `php artisan test`** |
+| `npm run build` | Sandbox `node_modules` is the Windows build | ⛔ **NOT RUN — run `npm run build`** |
+| UI at desktop/tablet/mobile | No browser | ⛔ **NOT VERIFIED visually** |
+
+Treat this section as **code review ready, test-unverified** until the commands above are run on your machine.
+
+### 14.1 Calculated eligibility → pending review → approved assignment
+
+`RANKS_REQUIRE_APPROVAL` (default **true**). The engine now only **calculates**: when an investor qualifies for a higher rank it raises a `rank_reviews` row (`pending`) and notifies Admin + Financial users. **No rank is awarded and no badge shows.** An authorised person then:
+
+* **Approves** (`ranks.review`: Admin or Financial) → eligibility is **re-validated under a row lock**; rank written; append-only audit record `approved_upgrade` (approver, role, reason, timestamp, calculation snapshot); investor notified. A stale review (investor no longer qualifies) is refused with 422.
+* **Rejects** (reason ≥ 5 chars) → recorded; **not re-raised** under the same rules (it is raised again if the rules change). An Admin may still award manually through the existing assign action.
+* The engine **withdraws** a pending review when the investor stops qualifying or qualifies for a different rank. Decided reviews are immutable (model guard).
+* Suspended/revoked investors are skipped by the engine entirely.
+
+Set `RANKS_REQUIRE_APPROVAL=false` to restore the earlier fully-automatic upgrades (a **Management decision**). The legacy rank tests run in that mode via `RankTestCase`.
+
+### 14.2 The five additional criteria (all seeded **disabled**)
+
+Tables `rank_additional_criteria` / `rank_additional_thresholds` / `rank_additional_history`. Thresholds are kept while a criterion is disabled; disabled criteria never affect eligibility and are shown for information.
+
+| Criterion | Bronze | Silver | Gold | Platinum | Diamond | Elite |
+|---|---:|---:|---:|---:|---:|---:|
+| Qualified referrals | 1 | 3 | 5 | 10 | 20 | 50 |
+| Current active investment (USD) | 100 | 500 | 2,500 | 5,000 | 10,000 | 25,000 |
+| Total approved deposits (USD) | 100 | 1,000 | 5,000 | 10,000 | 20,000 | 50,000 |
+| Qualifying investments | 1 | 2 | 3 | 5 | 8 | 12 |
+| Longest qualifying duration (days) | 7 | 14 | 30 | 60 | 90 | 180 |
+
+Core requirements (amount + completed cycles) are unchanged and mandatory. Additional criteria are ANDed on top of the core rule: they can only make qualifying harder. Enabling needs: Admin, a reason, all six thresholds present, the **currency policy confirmed** (money criteria), and — for referrals and duration — a recorded **Management decision** (below). Thresholds must not decrease from a lower to a higher rank. Every change appends to `rank_additional_history` and queues a re-evaluation; nobody is downgraded automatically (affected ranked investors appear under Reviews).
+
+**Defects found and handled:** `users.referral_count` is **never incremented anywhere** in the application, so a criterion built on it would always read 0 or a stale number. "Qualified referrals" is now derived from `users.referred_by` (unique referred accounts, never self, never the raw counter). Investment `start_date`/`end_date` are **date** columns, not timestamps, so durations are whole days. The pre-existing generic `investment_count` field counts records whose USD value is unverified; the new *Qualifying investments* counts **verified, non-cancelled, non-duplicate** records only.
+
+### 14.3 Rank status: suspend / revoke / reinstate
+
+`users.rank_status` (`active` default | `suspended` | `revoked`). The rank row is kept; **the badge is shown only while `active`** (`User::rankBadge()`), so pending, suspended and revoked ranks never display as approved. Actions need a reason, are audited (`suspended` / `revoked` / `reinstated`), and notify the investor. Suspend/revoke are Admin-only; reinstate uses `ranks.assign` and requires the investor to still qualify (otherwise the existing override policy applies). "Correct" a rank = the existing assign/downgrade actions.
+
+### 14.4 Investor notifications
+
+`InvestorRankNotification` (database channel) on every officially recorded change — awarded, upgraded, changed, suspended, revoked, reinstated. Deterministic id per audit record ⇒ no duplicates on retry; sent after commit via `SendInvestorRankNotificationJob`. No balances, thresholds, internal reasons or admin identity.
+
+### 14.5 Permissions (enforced by Gates on the server)
+
+| Gate | Roles | Allows |
+|---|---|---|
+| `ranks.review` | admin, financial | list / approve / reject pending reviews; read an investor's eligibility |
+| `ranks.export` | admin, financial | CSV export (investors, history) — formula-injection neutralised |
+| `ranks.suspend`, `ranks.revoke` | admin | suspend / revoke |
+| `ranks.manage-criteria` | admin | additional-criteria thresholds, enable/disable, Management decisions, load core drafts |
+| *(existing six `ranks.*` gates)* | admin | unchanged |
+
+Financial routes: `GET /api/financial/rank-approvals`, `POST …/{id}/approve|reject`, `GET …/investors/{id}/eligibility`, `GET /api/financial/rank-export`. Admin routes under `/api/admin/ranks`: `approvals`, `additional-criteria` (+ `/{key}/thresholds|policy|enable|disable`), `criteria/load-spec-drafts`, `investors/{id}/eligibility|suspend|revoke|reinstate`, `export`. Investors have no write path to rank data (`users.investor_rank_id` / `rank_status` are not mass-assignable).
+
+`POST /admin/ranks/criteria/load-spec-drafts` creates the six **core** rules from the specification as **inactive drafts** (only for ranks with no rule), through the validated, audited service. It never activates anything; activation remains a deliberate Admin action that Management must authorise.
+
+### 14.6 Deploy / rollback
+
+```bash
+php artisan migrate --force    # + 2026_10_24_100001_create_rank_approval_and_additional_criteria_tables (4 new tables, 2 defaulted columns on users)
+php artisan config:clear
+```
+No existing row is modified; existing ranked investors keep `rank_status='active'`. **Rollback:** `php artisan migrate:rollback --step=1` drops only what this migration added (pending reviews, additional-criteria configuration and history are lost — export first). Rank assignments and all existing audit tables are untouched.
+
+### 14.7 Open Management decisions (nothing has been guessed)
+
+1. Confirm whether the five additional criteria are mandatory or optional (they ship disabled).
+2. **Core amount basis:** the implementation uses *cumulative verified principal of non-cancelled investments* (`total_invested`). The spec asks Management to choose cumulative vs current invested principal. **Unchanged and unconfirmed.**
+3. **Duration basis:** completed investments vs elapsed time in an active investment — an Admin must record the choice before the criterion can be enabled.
+4. **"Qualified referral" definition** — three options offered (active / KYC-approved / KYC-approved and invested); an Admin must record the choice before enabling.
+5. Whether approval should remain required (`RANKS_REQUIRE_APPROVAL`) and whether Financial approval should be the sole/dual control.
+6. Currency policy confirmation (existing, §12.6) before any money criterion is used.
+
+### 14.8 Remaining limitations
+
+* All new code is **unexecuted** (see 14.0). Expect small defects on first run; the test file documents intended behaviour.
+* Rejections are recorded in `rank_reviews` (not in `investor_rank_changes`, which requires a resulting rank); the history export includes both.
+* The investor-facing rank page does not yet show a "review in progress" message; the API exposes `review_in_progress`.
+* The Admin investors list shows the assigned rank; "calculated eligibility" for the whole list is in the CSV export and per-investor panel (computing it for every row would be slow).
+* Preview ("Preview who qualifies") evaluates the core rule only, not the additional criteria.
+* Frontend `.gitignore` is saved as UTF-16 and is ineffective for git (it would not ignore `node_modules`, `dist` or `.env`). Re-save it as UTF-8.

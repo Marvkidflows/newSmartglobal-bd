@@ -140,7 +140,10 @@ class RankPresenter
             'name'            => $u->name ?? $u->full_name,
             'email'           => $u->email,
             'status'          => $u->status ?? 'active',
+            // ADMIN view: the assigned rank is always shown, with its status. (Investor-facing badges use
+            // User::rankBadge(), which is null unless the status is 'active'.)
             'rank'            => $u->investorRank?->badge(),
+            'rank_status'     => $u->rank_status ?? 'active',
             'rank_changed_at' => $u->rank_changed_at?->toIso8601String(),
             'needs_review'    => $needsReview,
         ];

@@ -16,10 +16,15 @@ class InvestorRankChange extends Model
     public const DOWNGRADE          = 'downgrade';
     public const AUTHORIZED_OVERRIDE = 'authorized_override';
     public const REVIEW_RETAINED    = 'review_retained';   // decision record: rank unchanged
+    public const APPROVED_UPGRADE   = 'approved_upgrade';  // calculated eligibility approved by an authorised reviewer
+    public const SUSPENDED          = 'suspended';         // decision record: rank kept, badge hidden
+    public const REVOKED            = 'revoked';           // decision record: rank withdrawn, badge hidden
+    public const REINSTATED         = 'reinstated';        // decision record: rank active again
 
     public const TYPES = [
         self::AUTOMATIC_UPGRADE, self::MANUAL_ASSIGNMENT, self::MANUAL_UPGRADE,
         self::DOWNGRADE, self::AUTHORIZED_OVERRIDE, self::REVIEW_RETAINED,
+        self::APPROVED_UPGRADE, self::SUSPENDED, self::REVOKED, self::REINSTATED,
     ];
 
     public $timestamps = false;

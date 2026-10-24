@@ -125,6 +125,17 @@ class RankCriteriaValidator
                 }
             }
 
+            // Mandatory core requirement (spec): blocks ACTIVATION; a draft may be saved but is warned.
+            if ($rank) {
+                $core = app(CoreRequirements::class);
+                if ($core->enabled()) {
+                    foreach ($core->problems((string) $rank->key, (string) $n['logic'], $conds) as $msg) {
+                        if (!empty($n['is_active'])) $conflicts[] = ['type' => 'core_requirements', 'message' => $msg];
+                        else $warnings[] = $msg . ' (This draft cannot be activated until it matches the specification.)';
+                    }
+                }
+            }
+
             if ($rank && !empty($n['is_active'])) {
                 [$c2, $w2] = $this->crossRank($n, $rank, $ignoreCriterionId);
                 $conflicts = array_merge($conflicts, $c2);

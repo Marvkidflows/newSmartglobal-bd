@@ -41,7 +41,40 @@ class RankEvaluationService
         protected RankRuleEvaluator $evaluator,
         protected RankAuditService $audit,
         protected RankEligibility $eligibility,
+        protected RankAdditionalCriteriaService $additional,
     ) {}
+
+    /** Resolved lazily: RankReviewService depends on this class (approval re-validates eligibility). */
+    protected function reviews(): RankReviewService
+    {
+        return app(RankReviewService::class);
+    }
+
+    /**
+     * Core rule result + every ENABLED additional criterion for $rankId. The core rule is untouched;
+     * additional criteria are ANDed on top (they can only make qualifying harder, never easier), and
+     * their unmet rows appear in the same `conditions` list so every consumer explains them.
+     *
+     * @param array|null $addlValues pre-resolved additional values (null = no optional criterion is in effect)
+     */
+    public function withAdditional(array $result, int $userId, int $rankId, ?array $addlValues): array
+    {
+        if ($addlValues === null) return $result;
+
+        $extra = $this->additional->conditionsFor($userId, $rankId, true, $addlValues);
+        if (!$extra) return $result;
+
+        $result['conditions'] = array_merge($result['conditions'], $extra);
+        if (collect($extra)->contains('passed', false)) $result['satisfied'] = false;
+
+        return $result;
+    }
+
+    /** Values for the optional criteria, or null when none is in effect (so the default path costs nothing). */
+    protected function additionalValues(int $userId): ?array
+    {
+        return $this->additional->usableCriteria()->isEmpty() ? null : ($this->additional->valuesFor([$userId])[$userId] ?? []);
+    }
 
     // ── Single investor ───────────────────────────────────────────────────────
 
@@ -59,6 +92,9 @@ class RankEvaluationService
      */
     public function usable(RankCriterion $criterion): bool
     {
+        // Mandatory core requirement: a rule without BOTH the specified amount and completed-cycle minimums never awards a rank.
+        if (!app(CoreRequirements::class)->conforms($criterion)) return false;
+
         if (app(CurrencyPolicyService::class)->isConfirmed()) return true;
 
         $criterion->loadMissing('conditions');
@@ -88,11 +124,16 @@ class RankEvaluationService
         $user = User::query()->where('role', 'investor')->whereKey($userId)->lockForUpdate()->first();
         if (!$user) return null;
 
+        // Suspended / revoked rank status is an Admin decision: the engine neither proposes nor flags
+        // anything until an authorised person reinstates the rank.
+        if (($user->rank_status ?? 'active') !== 'active') return null;
+
         $ranks        = $this->ranks();
         $currentLevel = $user->investor_rank_id ? ($ranks[$user->investor_rank_id]->level ?? 0) : 0;
 
         $fields = $criteria->flatMap(fn ($c) => $c->conditions->pluck('field'))->unique()->values()->all();
         $values = $this->registry->resolveMany([$user->id], $fields)[$user->id] ?? [];
+        $addl   = $this->additionalValues($user->id);
 
         // Compliance prerequisites (active account, verified). While one fails, NOTHING is
         // granted automatically — but nothing is taken away either (see syncDowngradeReview).
@@ -107,7 +148,7 @@ class RankEvaluationService
         $target = null; $targetResult = null;
         foreach (($eligibility["eligible"] ? $criteria : []) as $criterion) {   // highest rank first → first hit is the highest qualifying
             if ($criterion->rank->level <= $currentLevel) break;
-            $result = $this->evaluator->evaluate($criterion->toRule(), $values);
+            $result = $this->withAdditional($this->evaluator->evaluate($criterion->toRule(), $values), $user->id, $criterion->investor_rank_id, $addl);
 
             $entry = $blocked->get($criterion->investor_rank_id);
             if ($entry) {
@@ -123,7 +164,11 @@ class RankEvaluationService
         }
 
         $change = null;
-        if ($target) {
+        if (config('ranks.require_approval', true)) {
+            // CALCULATED eligibility only: nothing is awarded. A pending review is raised for an authorised
+            // Admin / Financial Team member; with no target, any stale pending review is withdrawn.
+            $this->reviews()->syncPending($user, $target, $targetResult, $run);
+        } elseif ($target) {
             $change = $this->applyAutomaticUpgrade($user, $target, $targetResult, $run);
             if ($hold) { $this->releaseHold($hold, 'Superseded by an automatic upgrade.'); $hold = null; }
         }
@@ -141,7 +186,7 @@ class RankEvaluationService
             }
         }
 
-        $this->syncDowngradeReview($user, $criteria, $values, $eligibility);
+        $this->syncDowngradeReview($user, $criteria, $values, $eligibility, $addl);
 
         return $change;
     }
@@ -179,6 +224,8 @@ class RankEvaluationService
         // Only after the whole transaction has COMMITTED. A delivery failure can
         // never roll the upgrade back; it is tracked and retryable.
         DB::afterCommit(fn () => SendRankChangeNotificationJob::dispatch($change->id));
+        // The investor is told about every officially recorded rank change (spec §4.7 / task §10).
+        DB::afterCommit(fn () => \App\Jobs\SendInvestorRankNotificationJob::dispatch($change->id));
 
         return $change;
     }
@@ -190,13 +237,13 @@ class RankEvaluationService
 
     // ── Downgrade review (never changes a rank) ───────────────────────────────
 
-    protected function syncDowngradeReview(User $user, Collection $criteria, array $values, array $eligibility): void
+    protected function syncDowngradeReview(User $user, Collection $criteria, array $values, array $eligibility, ?array $addl = null): void
     {
         if (!$user->investor_rank_id) return;
 
         // Shortfall = failed prerequisites + unmet conditions of the CURRENT rank's active rule.
         $criterion = $criteria->firstWhere('investor_rank_id', $user->investor_rank_id);
-        $result    = $criterion ? $this->evaluator->evaluate($criterion->toRule(), $values) : null;
+        $result    = $criterion ? $this->withAdditional($this->evaluator->evaluate($criterion->toRule(), $values), $user->id, $criterion->investor_rank_id, $addl) : null;
         $failed    = $this->shortfall($eligibility, $result);
 
         if (!$failed) {
@@ -267,11 +314,14 @@ class RankEvaluationService
 
     // ── Evaluating ONE criterion for ONE investor (manual-change checks, detail view) ──
 
-    public function evaluateRuleFor(int $userId, array $rule): array
+    public function evaluateRuleFor(int $userId, array $rule, ?int $rankId = null): array
     {
         $fields = array_values(array_unique(array_column($rule['conditions'] ?? [], 'field')));
         $values = $this->registry->resolveMany([$userId], $fields)[$userId] ?? [];
-        return $this->evaluator->evaluate($rule, $values);
+        $result = $this->evaluator->evaluate($rule, $values);
+
+        // When the rank is known, the enabled additional criteria apply exactly as in automatic evaluation.
+        return $rankId ? $this->withAdditional($result, $userId, $rankId, $this->additionalValues($userId)) : $result;
     }
 
     // ── Batched / queued runs ─────────────────────────────────────────────────

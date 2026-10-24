@@ -11,6 +11,8 @@ use App\Models\InvestorRankChange;
 use App\Models\RankChangeNotification;
 use App\Models\RankDowngradeReview;
 use App\Models\User;
+use App\Models\RankReview;
+use App\Notifications\InvestorRankNotification;
 use App\Notifications\RankDowngradeReviewNotification;
 use App\Notifications\RankUpgradedNotification;
 use Illuminate\Notifications\DatabaseNotification;
@@ -26,6 +28,73 @@ class RankNotifier
     {
         return User::query()->where('role', 'admin')
             ->where(fn ($q) => $q->whereNull('status')->orWhere('status', 'active'))->get();
+    }
+
+    /** Admin + Financial Team members who may approve a pending rank. */
+    public function reviewers()
+    {
+        return User::query()->whereIn('role', ['admin', 'financial'])
+            ->where(fn ($q) => $q->whereNull('status')->orWhere('status', 'active'))->get();
+    }
+
+    /** Tell reviewers a calculated eligibility is waiting for a decision. Safe to repeat (deterministic ids). */
+    public function deliverPendingReview(int $reviewId): void
+    {
+        $review = RankReview::with(['proposedRank', 'currentRank'])->find($reviewId);
+        if (!$review || $review->status !== RankReview::PENDING) return;
+
+        $investor = User::find($review->investor_id);
+        $name = $investor?->name ?? $investor?->full_name ?? 'An investor';
+        $payload = [
+            'type'          => 'rank_review_pending',
+            'title'         => 'Rank approval required',
+            'message'       => sprintf('%s (%s) is calculated as eligible for %s (from %s). Awaiting approval — no rank has been awarded.',
+                                       $name, $review->account_id, $review->proposedRank?->name, $review->currentRank?->name ?? 'Unranked'),
+            'investor_id'   => $review->investor_id, 'account_id' => $review->account_id, 'investor_name' => $name,
+            'proposed_rank' => $review->proposedRank?->name, 'current_rank' => $review->currentRank?->name,
+            'review_id'     => $review->id, 'reference' => $review->reference,
+            'occurred_at'   => $review->created_at?->toIso8601String(),
+            'link'          => '/admin/ranks/approvals',
+        ];
+
+        foreach ($this->reviewers() as $reviewer) {
+            $id = Uuid::uuid5(Uuid::NAMESPACE_URL, "ssi-rank-approval:{$reviewId}:{$reviewer->id}")->toString();
+            if (DatabaseNotification::query()->whereKey($id)->exists()) continue;
+            $reviewer->notify(new RankDowngradeReviewNotification($id, $payload));   // same generic database-notification carrier
+        }
+
+        \Illuminate\Support\Facades\DB::table('rank_reviews')->where('id', $reviewId)->update(['notified_at' => now()]);   // bookkeeping only
+    }
+
+    /** Tell the INVESTOR their rank was officially awarded / upgraded / changed / suspended / revoked / reinstated. */
+    public function deliverInvestor(int $changeId): void
+    {
+        $change = InvestorRankChange::with(['previousRank', 'newRank'])->find($changeId);
+        if (!$change || $change->change_type === InvestorRankChange::REVIEW_RETAINED) return;
+
+        $investor = User::find($change->investor_id);
+        if (!$investor || $investor->role !== 'investor') return;
+
+        $id = Uuid::uuid5(Uuid::NAMESPACE_URL, "ssi-rank-investor:{$changeId}")->toString();
+        if (DatabaseNotification::query()->whereKey($id)->exists()) return;          // already delivered
+
+        $to = $change->newRank?->name; $from = $change->previousRank?->name;
+        [$event, $title, $message] = match ($change->change_type) {
+            InvestorRankChange::SUSPENDED  => ['suspended',  "Your {$to} rank badge has been suspended",  "Your {$to} rank is temporarily suspended. Contact SSI support if you have questions."],
+            InvestorRankChange::REVOKED    => ['revoked',    "Your {$to} rank has been revoked",         "Your {$to} rank has been withdrawn by SSI. Contact SSI support if you have questions."],
+            InvestorRankChange::REINSTATED => ['reinstated', "Your {$to} rank has been reinstated",      "Your {$to} rank is active again."],
+            default => match (true) {
+                !$from                                                   => ['awarded',  "You have been awarded the {$to} rank",   "Congratulations! SSI has officially awarded you the {$to} rank."],
+                ($change->newRank?->level ?? 0) > ($change->previousRank?->level ?? 0) => ['upgraded', "You have been upgraded to {$to}", "Congratulations! Your investor rank has been upgraded from {$from} to {$to}."],
+                default                                                  => ['changed',  "Your investor rank is now {$to}",        "Your investor rank has changed from {$from} to {$to}."],
+            },
+        };
+
+        $investor->notify(new InvestorRankNotification($id, [
+            'type' => 'rank_update', 'event' => $event, 'title' => $title, 'message' => $message,
+            'previous_rank' => $from, 'new_rank' => $to, 'reference' => $change->reference,
+            'occurred_at' => $change->created_at?->toIso8601String(), 'link' => '/investor/rank',
+        ]));
     }
 
     public function deliverChange(int $changeId): void

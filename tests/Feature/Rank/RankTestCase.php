@@ -25,6 +25,11 @@ abstract class RankTestCase extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // The legacy rank tests exercise the engine's direct-upgrade behaviour. The approval workflow
+        // (RANKS_REQUIRE_APPROVAL, default true) is covered by RankSpecComplianceTest, which switches it back on.
+        config(['ranks.require_approval' => false]);
+        // Legacy fixtures use arbitrary numbers; the mandatory-core guard has its own suite (RankCoreRequirementsTest) which turns it on.
+        config(['ranks.enforce_core_requirements' => false]);
         $this->admin = User::factory()->create(['role' => 'admin', 'status' => 'active']);
         // The REAL default is "no confirmed currency policy", which blocks activating money criteria. The rank tests
         // exercise the engine, so they start with a confirmed policy; RankDecisionsTest and RankCurrencyPolicyTest

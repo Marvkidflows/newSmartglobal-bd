@@ -20,8 +20,14 @@ class InvestorRankController extends Controller
     {
         $user = $request->user()->load('investorRank');
 
+        // A pending (unapproved) eligibility is NEVER shown as a rank. The investor only learns that a review
+        // is in progress — no rank name, thresholds, or reviewer details.
+        $reviewInProgress = \App\Models\RankReview::pending()->where('investor_id', $user->id)->exists();
+
         return response()->json([
             'rank'            => $user->rankBadge(),
+            'rank_status'     => $user->rank_status ?? 'active',
+            'review_in_progress' => $reviewInProgress,
             'account_id'      => $user->account_id,
             'rank_changed_at' => $user->rank_changed_at?->toIso8601String(),
         ]);

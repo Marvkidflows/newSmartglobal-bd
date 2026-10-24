@@ -67,6 +67,15 @@ public function boot(): void
         Gate::define($rankAbility, fn (User $user) => $user->role === 'admin');
     }
 
+    // Approval + reporting are shared with the Financial Team (they verify the financial basis of a rank).
+    // Configuration, assignment, suspension and revocation stay Admin-only.
+    foreach (['ranks.review', 'ranks.export'] as $sharedRankAbility) {
+        Gate::define($sharedRankAbility, fn (User $user) => in_array($user->role, ['financial', 'admin'], true));
+    }
+    foreach (['ranks.suspend', 'ranks.revoke'] as $adminOnlyRankAbility) {
+        Gate::define($adminOnlyRankAbility, fn (User $user) => $user->role === 'admin');
+    }
+
     // Evaluation triggers: only events that can change rank eligibility, and only
     // for the ONE affected investor. The job is queued after commit, de-duplicated
     // per investor, and wrapped in rescue() so a ranking problem can never break

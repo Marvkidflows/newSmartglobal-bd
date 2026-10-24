@@ -33,6 +33,9 @@ use App\Http\Controllers\Admin\AdminUserController;
 use App\Http\Controllers\Admin\RankManagementController;
 use App\Http\Controllers\Admin\RankCriteriaController;
 use App\Http\Controllers\Admin\RankEvaluationRunController;
+use App\Http\Controllers\Admin\RankApprovalController;
+use App\Http\Controllers\Admin\RankAdditionalCriteriaController;
+use App\Http\Controllers\Admin\RankStandingController;
 use App\Http\Controllers\Investor\InvestorRankController;
 use App\Http\Controllers\Admin\AdminInvestmentController;
 use App\Http\Controllers\Admin\AdminEmailVerificationController;
@@ -318,6 +321,24 @@ Route::get('/investor/deposits/{deposit}',          [InvestorDepositController::
             Route::post('/criteria/{criterion}/activate',   [RankCriteriaController::class, 'activate'])->whereNumber('criterion')->middleware('throttle:30,1')->name('criteria.activate');
             Route::post('/criteria/{criterion}/deactivate', [RankCriteriaController::class, 'deactivate'])->whereNumber('criterion')->middleware('throttle:30,1')->name('criteria.deactivate');
             Route::delete('/criteria/{criterion}',   [RankCriteriaController::class, 'destroy'])->whereNumber('criterion')->middleware('throttle:30,1')->name('criteria.destroy');
+
+            // ── Spec-compliance additions: approval workflow, additional criteria, status, export ──
+            Route::get('/approvals',                       [RankApprovalController::class, 'index'])->name('approvals.index');
+            Route::post('/approvals/{review}/approve',     [RankApprovalController::class, 'approve'])->whereNumber('review')->middleware('throttle:60,1')->name('approvals.approve');
+            Route::post('/approvals/{review}/reject',      [RankApprovalController::class, 'reject'])->whereNumber('review')->middleware('throttle:60,1')->name('approvals.reject');
+
+            Route::get('/additional-criteria',                         [RankAdditionalCriteriaController::class, 'index'])->name('additional.index');
+            Route::put('/additional-criteria/{key}/thresholds',        [RankAdditionalCriteriaController::class, 'thresholds'])->where('key', '[a-z_]+')->middleware('throttle:30,1')->name('additional.thresholds');
+            Route::put('/additional-criteria/{key}/policy',            [RankAdditionalCriteriaController::class, 'policy'])->where('key', '[a-z_]+')->middleware('throttle:30,1')->name('additional.policy');
+            Route::post('/additional-criteria/{key}/enable',           [RankAdditionalCriteriaController::class, 'enable'])->where('key', '[a-z_]+')->middleware('throttle:30,1')->name('additional.enable');
+            Route::post('/additional-criteria/{key}/disable',          [RankAdditionalCriteriaController::class, 'disable'])->where('key', '[a-z_]+')->middleware('throttle:30,1')->name('additional.disable');
+            Route::post('/criteria/load-spec-drafts',                  [RankAdditionalCriteriaController::class, 'loadCoreDrafts'])->middleware('throttle:5,1')->name('criteria.load-spec-drafts');
+
+            Route::get('/investors/{user}/eligibility',    [RankStandingController::class, 'eligibility'])->whereNumber('user')->name('investors.eligibility');
+            Route::post('/investors/{user}/suspend',       [RankStandingController::class, 'suspend'])->whereNumber('user')->middleware('throttle:30,1')->name('investors.suspend');
+            Route::post('/investors/{user}/revoke',        [RankStandingController::class, 'revoke'])->whereNumber('user')->middleware('throttle:30,1')->name('investors.revoke');
+            Route::post('/investors/{user}/reinstate',     [RankStandingController::class, 'reinstate'])->whereNumber('user')->middleware('throttle:30,1')->name('investors.reinstate');
+            Route::get('/export',                          [RankStandingController::class, 'export'])->middleware('throttle:10,1')->name('export');
 
             Route::get('/runs',                      [RankEvaluationRunController::class, 'index'])->name('runs.index');
             Route::post('/runs',                     [RankEvaluationRunController::class, 'store'])->middleware('throttle:5,1')->name('runs.store');
@@ -617,6 +638,15 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         // being able to alter an investor's investment terms.
         Route::get('/investments',              [AdminInvestmentController::class, 'index'])->name('investments.index');
         Route::get('/investments/{investment}', [AdminInvestmentController::class, 'show'])->name('investments.show');
+
+        // Investor rank approvals + reporting for the Financial Team. Same controllers as the Admin screens; the
+        // Gate (ranks.review / ranks.export) is re-checked inside each action. Financial staff can NOT configure
+        // criteria, assign, suspend or revoke ranks.
+        Route::get('/rank-approvals',                    [RankApprovalController::class, 'index'])->name('rank-approvals.index');
+        Route::post('/rank-approvals/{review}/approve',  [RankApprovalController::class, 'approve'])->whereNumber('review')->middleware('throttle:60,1')->name('rank-approvals.approve');
+        Route::post('/rank-approvals/{review}/reject',   [RankApprovalController::class, 'reject'])->whereNumber('review')->middleware('throttle:60,1')->name('rank-approvals.reject');
+        Route::get('/rank-approvals/investors/{user}/eligibility', [RankStandingController::class, 'eligibility'])->whereNumber('user')->name('rank-approvals.eligibility');
+        Route::get('/rank-export',                       [RankStandingController::class, 'export'])->middleware('throttle:10,1')->name('rank-export');
 
         // USD verification of investment / deposit amounts (rank thresholds are in USD; amounts carry no currency).
         // Appends a valuation row + Financial audit entry; never edits the record itself.

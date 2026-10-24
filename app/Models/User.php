@@ -76,7 +76,6 @@ class User extends Authenticatable
         'kyc_verified'            => 'boolean',
         'kyc_verified_at'         => 'datetime',
         'rank_changed_at'         => 'datetime',
-        'privacy_policy_acknowledged_at' => 'datetime',
     ];
 
     // ── RELATIONSHIPS ──────────────────────────────────────────────────────
@@ -113,6 +112,10 @@ public static function idFromAccountId(?string $value): ?int
 // investorRank on lists to avoid N+1.
 public function rankBadge(): ?array
 {
+    // Badge only while the rank is officially ACTIVE: suspended / revoked ranks, and pending (unapproved)
+    // eligibility, never display as a rank. Derived solely from server-side state.
+    if (($this->rank_status ?? 'active') !== 'active') return null;
+
     return $this->investorRank?->badge();
 }
 

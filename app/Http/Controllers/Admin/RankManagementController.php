@@ -64,6 +64,7 @@ class RankManagementController extends Controller
             'ranks'              => $ranks,
             'unranked_count'     => User::where('role', 'investor')->whereNull('investor_rank_id')->count(),
             'open_reviews'       => RankDowngradeReview::open()->count(),
+            'pending_approvals'  => \App\Models\RankReview::pending()->count(),
             'failed_alerts'      => RankChangeNotification::where('status', 'failed')->count(),
             'latest_run'         => ($r = RankEvaluationRun::latest('id')->first()) ? $this->present->run($r) : null,
             'override_allowed'   => (bool) config('ranks.allow_manual_override'),

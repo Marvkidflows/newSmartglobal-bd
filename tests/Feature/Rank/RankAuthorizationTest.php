@@ -34,6 +34,7 @@ class RankAuthorizationTest extends RankTestCase
 
     private function fill(string $uri, int $id = 999999): string
     {
+        $uri = preg_replace('/\{key\}/', 'sample_key', $uri);   // {key} is constrained to [a-z_]+, a number would 404 before auth runs
         return '/' . preg_replace('/\{[^}]+\}/', (string) $id, $uri);
     }
 

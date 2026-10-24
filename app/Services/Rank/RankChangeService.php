@@ -42,6 +42,10 @@ class RankChangeService
         return DB::transaction(function () use ($investor, $target, $admin, $reason, $override, $overrideJustification) {
             $user = User::query()->where('role', 'investor')->whereKey($investor->id)->lockForUpdate()->firstOrFail();
 
+            if (($user->rank_status ?? 'active') !== 'active') {
+                throw ValidationException::withMessages(['rank' => ["This investor's rank is {$user->rank_status}. Reinstate it before assigning a different rank."]]);
+            }
+
             $current  = $user->investor_rank_id ? InvestorRank::find($user->investor_rank_id) : null;
             $curLevel = $current?->level ?? 0;
 
@@ -59,7 +63,7 @@ class RankChangeService
                 // an exception to the rules → override policy applies, never a silent bypass.
                 $prereq    = $this->eligibility->check($user);
                 $criterion = $this->activeCriterion($target->id);
-                $res       = $criterion ? $this->evaluation->evaluateRuleFor($user->id, $criterion->toRule()) : null;
+                $res       = $criterion ? $this->evaluation->evaluateRuleFor($user->id, $criterion->toRule(), $target->id) : null;
 
                 $snapshot = ['prerequisites' => $prereq]
                     + ($criterion ? ['criterion' => $this->audit->criterionSnapshot($criterion), 'evaluation' => $res] : []);
@@ -70,7 +74,7 @@ class RankChangeService
                 // Lowering: record how the investor stands against the CURRENT rank's criteria.
                 $criterion = $this->activeCriterion($current->id);
                 if ($criterion) {
-                    $res = $this->evaluation->evaluateRuleFor($user->id, $criterion->toRule());
+                    $res = $this->evaluation->evaluateRuleFor($user->id, $criterion->toRule(), $current->id);
                     $snapshot = ['criterion' => $this->audit->criterionSnapshot($criterion), 'evaluation' => $res];
                     // Lowering someone who STILL qualifies is an exception to the rules (the
                     // engine would otherwise re-upgrade them), so it needs the override path.
@@ -125,6 +129,8 @@ class RankChangeService
                 'resolution_reason' => $reason, 'resolved_at' => now(), 'updated_at' => now(),
             ]);
 
+            DB::afterCommit(fn () => \App\Jobs\SendInvestorRankNotificationJob::dispatch($change->id));
+
             if ($shortfall) {
                 $this->evaluation->acknowledgeShortfall($user, $target->id, $shortfallCriterion, $shortfall, $admin, 'Authorized override: ' . $overrideJustification);
             }
@@ -175,7 +181,7 @@ class RankChangeService
             ->filter(fn ($c) => $c->rank->level > $targetLevel && $c->rank->level <= $previousLevel && $this->evaluation->usable($c));
 
         foreach ($criteria as $c) {
-            if ($this->evaluation->evaluateRuleFor($userId, $c->toRule())['satisfied']) {
+            if ($this->evaluation->evaluateRuleFor($userId, $c->toRule(), $c->investor_rank_id)['satisfied']) {
                 $held[] = ['rank_id' => $c->investor_rank_id, 'level' => $c->rank->level, 'rule_hash' => $c->ruleHash()];
             }
         }
@@ -189,7 +195,7 @@ class RankChangeService
         return $criterion && $this->evaluation->usable($criterion) ? $criterion : null;
     }
 
-    protected function assertOverrideAllowed(User $admin, bool $override, ?string $justification, bool $isDowngrade, InvestorRank $target, ?array $shortfall, string $heldNames = ''): void
+    public function assertOverrideAllowed(User $admin, bool $override, ?string $justification, bool $isDowngrade, InvestorRank $target, ?array $shortfall, string $heldNames = ''): void
     {
         // $shortfall is the list of unmet requirements (failed prerequisites first, then criteria).
         $failedText = $shortfall ? collect($shortfall)->pluck('text')->implode('; ') : null;
