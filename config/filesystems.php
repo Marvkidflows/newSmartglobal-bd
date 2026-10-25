@@ -38,6 +38,17 @@ return [
             'report' => false,
         ],
 
+        // Private store for MarvFlow team-request documents (config/team_documents.php). Outside the web root,
+        // not linked into public/, no URL: files are only reachable through authenticated controller routes.
+        'team_documents' => [
+            'driver' => 'local',
+            'root' => storage_path('app/private/team-documents'),
+            'visibility' => 'private',
+            'serve' => false,
+            'throw' => false,
+            'report' => false,
+        ],
+
         'public' => [
             'driver' => 'local',
             'root' => storage_path('app/public'),

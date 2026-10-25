@@ -21,11 +21,14 @@ namespace App\Http\Controllers\Marvflow;
 use App\Http\Controllers\Controller;
 use App\Models\TeamRequest;
 use App\Models\TeamRequestActivity;
+use App\Models\TeamRequestAttachment;
 use App\Models\TeamRequestMessage;
 use App\Models\User;
+use App\Services\TeamAttachmentService;
 use Cloudinary\Cloudinary;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 
 class MarvflowRequestController extends Controller
 {
@@ -72,6 +75,8 @@ class MarvflowRequestController extends Controller
             'assignee:id,name',
             'messages.sender:id,name,role',
             'activity.actor:id,name',
+            'attachments.uploader:id,name',
+            'messages.attachments.uploader:id,name',
         ])->find($id);
 
         if (!$teamRequest) {
@@ -91,21 +96,32 @@ class MarvflowRequestController extends Controller
 
         $validated = $request->validate([
             'body'       => ['required', 'string', 'max:5000'],
-            'attachment' => ['nullable', 'image', 'max:5120'],
+            'attachment' => ['nullable', 'file'],
         ]);
 
+        // Images keep their existing path (Cloudinary, attachment_url, 5 MB). Documents are validated and stored
+        // privately by TeamAttachmentService. Validation happens BEFORE anything is saved.
+        $attachments = app(TeamAttachmentService::class);
+        $kind = $attachments->prepare($request->file('attachment'));
+
         $attachmentUrl = null;
-        if ($request->hasFile('attachment')) {
+        if ($kind && $kind['kind'] === 'image') {
             $attachmentUrl = $this->uploadAttachment($request->file('attachment'));
         }
 
-        TeamRequestMessage::create([
-            'team_request_id' => $teamRequest->id,
-            'sender_id'       => Auth::id(),
-            'sender_side'     => 'marvflow',
-            'body'            => $validated['body'],
-            'attachment_url'  => $attachmentUrl,
-        ]);
+        DB::transaction(function () use ($teamRequest, $validated, $attachmentUrl, $kind, $attachments, $request) {
+            $message = TeamRequestMessage::create([
+                'team_request_id' => $teamRequest->id,
+                'sender_id'       => Auth::id(),
+                'sender_side'     => 'marvflow',
+                'body'            => $validated['body'],
+                'attachment_url'  => $attachmentUrl,
+            ]);
+
+            if ($kind && $kind['kind'] === 'document') {
+                $attachments->storeDocument($request->file('attachment'), $kind, $teamRequest, $message, Auth::user());
+            }
+        });
 
         // A reply is a natural "we're on it" signal — bump a brand new
         // request out of "New" automatically so it doesn't sit
@@ -119,6 +135,24 @@ class MarvflowRequestController extends Controller
             'message' => 'Reply sent.',
             'request' => $this->formatDetail($teamRequest->fresh(['sender:id,name,email,role', 'assignee:id,name', 'messages.sender:id,name,role', 'activity.actor:id,name'])),
         ]);
+    }
+
+    // GET /marvflow/requests/{id}/attachments/{attachment}
+    // Every MarvFlow team member may open every request (existing visibility rule, see this class's header); the
+    // attachment must still belong to the request named in the URL.
+    public function downloadAttachment(Request $request, $id, $attachment)
+    {
+        $teamRequest = TeamRequest::find($id);
+        if (!$teamRequest) {
+            return response()->json(['message' => 'Request not found.'], 404);
+        }
+
+        $row = TeamRequestAttachment::where('team_request_id', $teamRequest->id)->find($attachment);
+        if (!$row) {
+            return response()->json(['message' => 'Attachment not found.'], 404);
+        }
+
+        return app(TeamAttachmentService::class)->download($row, $request->boolean('inline'));
     }
 
     // POST /marvflow/requests/{id}/status
@@ -296,6 +330,9 @@ class MarvflowRequestController extends Controller
 
     protected function formatDetail(TeamRequest $r): array
     {
+        $r->loadMissing(['attachments.uploader:id,name', 'messages.attachments.uploader:id,name']);
+        $files = app(TeamAttachmentService::class);
+
         return [
             'id'             => $r->id,
             'display_id'     => $r->displayId(),
@@ -304,6 +341,7 @@ class MarvflowRequestController extends Controller
             'priority'       => $r->priority,
             'status'         => $r->status,
             'attachment_url' => $r->attachment_url,
+            'attachments'    => $r->attachments->whereNull('team_request_message_id')->map(fn ($a) => $files->present($a))->values(),
             'sender_name'    => $r->sender->name ?? 'Unknown',
             'sender_email'   => $r->sender->email ?? null,
             'sender_role'    => $r->sender->role ?? null,
@@ -318,6 +356,7 @@ class MarvflowRequestController extends Controller
                 'sender_name'    => $m->sender->name ?? 'Unknown',
                 'body'           => $m->body,
                 'attachment_url' => $m->attachment_url,
+                'attachments'    => $m->attachments->map(fn ($a) => $files->present($a))->values(),
                 'created_at'     => $m->created_at->toIso8601String(),
             ]),
             'activity' => $r->activity->map(fn (TeamRequestActivity $a) => [

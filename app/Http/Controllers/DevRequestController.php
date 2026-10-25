@@ -20,11 +20,14 @@ namespace App\Http\Controllers;
 use App\Jobs\SendMarvflowTelegramNotification;
 use App\Models\TeamRequest;
 use App\Models\TeamRequestActivity;
+use App\Models\TeamRequestAttachment;
 use App\Models\TeamRequestMessage;
 use App\Services\MarvflowNotificationService;
+use App\Services\TeamAttachmentService;
 use Cloudinary\Cloudinary;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 
 class DevRequestController extends Controller
 {
@@ -45,7 +48,7 @@ class DevRequestController extends Controller
     public function show(Request $request, $id)
     {
         $teamRequest = TeamRequest::where('sender_id', Auth::id())
-            ->with(['assignee:id,name', 'messages.sender:id,name,role'])
+            ->with(['assignee:id,name', 'messages.sender:id,name,role', 'attachments.uploader:id,name', 'messages.attachments.uploader:id,name'])
             ->find($id);
 
         if (!$teamRequest) {
@@ -64,11 +67,16 @@ class DevRequestController extends Controller
             'subject'    => ['required', 'string', 'max:200'],
             'message'    => ['required', 'string', 'max:5000'],
             'priority'   => ['required', 'in:normal,high,urgent'],
-            'attachment' => ['nullable', 'image', 'max:5120'],
+            'attachment' => ['nullable', 'file'],
         ]);
 
+        // Images keep their existing path (Cloudinary, attachment_url, 5 MB). Documents (PDF/DOCX/XLSX/TXT/MD) are
+        // validated here and stored privately — TeamAttachmentService is the single place for both decisions.
+        $attachments = app(TeamAttachmentService::class);
+        $kind = $attachments->prepare($request->file('attachment'));
+
         $attachmentUrl = null;
-        if ($request->hasFile('attachment')) {
+        if ($kind && $kind['kind'] === 'image') {
             $attachmentUrl = $this->uploadAttachment($request->file('attachment'));
         }
 
@@ -78,21 +86,30 @@ class DevRequestController extends Controller
         // visible on the MarvFlow dashboard before either notification
         // step below even starts. Nothing after this point can cause
         // the request itself to be lost.
-        $teamRequest = TeamRequest::create([
-            'sender_id'      => $user->id,
-            'subject'        => $validated['subject'],
-            'message'        => $validated['message'],
-            'priority'       => $validated['priority'],
-            'status'         => 'new',
-            'attachment_url' => $attachmentUrl,
-        ]);
+        // One transaction: if the document cannot be stored, the request is not created (no half-saved request).
+        $teamRequest = DB::transaction(function () use ($user, $validated, $attachmentUrl, $kind, $attachments, $request) {
+            $teamRequest = TeamRequest::create([
+                'sender_id'      => $user->id,
+                'subject'        => $validated['subject'],
+                'message'        => $validated['message'],
+                'priority'       => $validated['priority'],
+                'status'         => 'new',
+                'attachment_url' => $attachmentUrl,
+            ]);
 
-        TeamRequestActivity::create([
-            'team_request_id' => $teamRequest->id,
-            'actor_id'        => $user->id,
-            'action'          => 'created',
-            'to_value'        => 'new',
-        ]);
+            TeamRequestActivity::create([
+                'team_request_id' => $teamRequest->id,
+                'actor_id'        => $user->id,
+                'action'          => 'created',
+                'to_value'        => 'new',
+            ]);
+
+            if ($kind && $kind['kind'] === 'document') {
+                $attachments->storeDocument($request->file('attachment'), $kind, $teamRequest, null, $user);
+            }
+
+            return $teamRequest;
+        });
 
         // In-app notification to the MarvFlow team — synchronous like
         // FinancialNotificationService's equivalent; this is a fast
@@ -122,21 +139,32 @@ class DevRequestController extends Controller
 
         $validated = $request->validate([
             'body'       => ['required', 'string', 'max:5000'],
-            'attachment' => ['nullable', 'image', 'max:5120'],
+            'attachment' => ['nullable', 'file'],
         ]);
 
+        $attachments = app(TeamAttachmentService::class);
+        $kind = $attachments->prepare($request->file('attachment'));   // validates BEFORE anything is saved
+
         $attachmentUrl = null;
-        if ($request->hasFile('attachment')) {
+        if ($kind && $kind['kind'] === 'image') {
             $attachmentUrl = $this->uploadAttachment($request->file('attachment'));
         }
 
-        $message = TeamRequestMessage::create([
-            'team_request_id' => $teamRequest->id,
-            'sender_id'       => Auth::id(),
-            'sender_side'     => 'ssi',
-            'body'            => $validated['body'],
-            'attachment_url'  => $attachmentUrl,
-        ]);
+        $message = DB::transaction(function () use ($teamRequest, $validated, $attachmentUrl, $kind, $attachments, $request) {
+            $message = TeamRequestMessage::create([
+                'team_request_id' => $teamRequest->id,
+                'sender_id'       => Auth::id(),
+                'sender_side'     => 'ssi',
+                'body'            => $validated['body'],
+                'attachment_url'  => $attachmentUrl,
+            ]);
+
+            if ($kind && $kind['kind'] === 'document') {
+                $attachments->storeDocument($request->file('attachment'), $kind, $teamRequest, $message, Auth::user());
+            }
+
+            return $message;
+        });
 
         // A reply from the SSI side to a request that had already been
         // marked resolved/closed reopens it — otherwise it would sit
@@ -165,6 +193,23 @@ class DevRequestController extends Controller
             'message' => 'Reply sent.',
             'request' => $this->formatDetail($teamRequest->fresh(['assignee:id,name', 'messages.sender:id,name,role'])),
         ]);
+    }
+
+    // GET /admin/dev-requests/{id}/attachments/{attachment} | /financial/dev-requests/{id}/attachments/{attachment}
+    // Same visibility rule as show(): only the request's own sender. The attachment must belong to THAT request.
+    public function downloadAttachment(Request $request, $id, $attachment)
+    {
+        $teamRequest = TeamRequest::where('sender_id', Auth::id())->find($id);
+        if (!$teamRequest) {
+            return response()->json(['message' => 'Request not found.'], 404);
+        }
+
+        $row = TeamRequestAttachment::where('team_request_id', $teamRequest->id)->find($attachment);
+        if (!$row) {
+            return response()->json(['message' => 'Attachment not found.'], 404);
+        }
+
+        return app(TeamAttachmentService::class)->download($row, $request->boolean('inline'));
     }
 
     // ── HELPERS ──────────────────────────────────────────────────────
@@ -202,6 +247,9 @@ class DevRequestController extends Controller
 
     protected function formatDetail(TeamRequest $r): array
     {
+        $r->loadMissing(['attachments.uploader:id,name', 'messages.attachments.uploader:id,name']);
+        $files = app(TeamAttachmentService::class);
+
         return [
             'id'             => $r->id,
             'display_id'     => $r->displayId(),
@@ -210,6 +258,8 @@ class DevRequestController extends Controller
             'priority'       => $r->priority,
             'status'         => $r->status,
             'attachment_url' => $r->attachment_url,
+            // Documents on the ORIGINAL request (replies carry their own). Images stay in attachment_url.
+            'attachments'    => $r->attachments->whereNull('team_request_message_id')->map(fn ($a) => $files->present($a))->values(),
             'assigned_to'    => $r->assignee?->name,
             'created_at'     => $r->created_at->toIso8601String(),
             'resolved_at'    => $r->resolved_at?->toIso8601String(),
@@ -219,6 +269,7 @@ class DevRequestController extends Controller
                 'sender_name'    => $m->sender->name ?? 'Unknown',
                 'body'           => $m->body,
                 'attachment_url' => $m->attachment_url,
+                'attachments'    => $m->attachments->map(fn ($a) => $files->present($a))->values(),
                 'created_at'     => $m->created_at->toIso8601String(),
             ]),
         ];

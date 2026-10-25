@@ -23,6 +23,11 @@ class TeamRequestMessage extends Model
         return $this->belongsTo(TeamRequest::class);
     }
 
+    public function attachments()
+    {
+        return $this->hasMany(TeamRequestAttachment::class, 'team_request_message_id');
+    }
+
     public function sender()
     {
         return $this->belongsTo(User::class, 'sender_id');

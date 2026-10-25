@@ -359,6 +359,7 @@ Route::get('/investor/deposits/{deposit}',          [InvestorDepositController::
         Route::post('/dev-requests',              [DevRequestController::class, 'store'])->name('dev-requests.store');
         Route::get('/dev-requests/{id}',          [DevRequestController::class, 'show'])->name('dev-requests.show');
         Route::post('/dev-requests/{id}/reply',   [DevRequestController::class, 'reply'])->name('dev-requests.reply');
+        Route::get('/dev-requests/{id}/attachments/{attachment}', [DevRequestController::class, 'downloadAttachment'])->whereNumber(['id', 'attachment'])->middleware('throttle:120,1')->name('dev-requests.attachments.download');
 
         // Admin <-> Financial shared channel — one conversation, both
         // sides post and read the same thread.
@@ -608,6 +609,7 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         Route::post('/dev-requests',              [DevRequestController::class, 'store'])->name('dev-requests.store');
         Route::get('/dev-requests/{id}',          [DevRequestController::class, 'show'])->name('dev-requests.show');
         Route::post('/dev-requests/{id}/reply',   [DevRequestController::class, 'reply'])->name('dev-requests.reply');
+        Route::get('/dev-requests/{id}/attachments/{attachment}', [DevRequestController::class, 'downloadAttachment'])->whereNumber(['id', 'attachment'])->middleware('throttle:120,1')->name('dev-requests.attachments.download');
 
         // Admin <-> Financial shared channel — same table/controller as
         // the admin side; one shared conversation, not per-user threads.
@@ -776,6 +778,7 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         Route::get('/requests',                [MarvflowRequestController::class, 'index'])->name('requests.index');
         Route::get('/requests/{id}',           [MarvflowRequestController::class, 'show'])->name('requests.show');
         Route::post('/requests/{id}/reply',    [MarvflowRequestController::class, 'reply'])->name('requests.reply');
+        Route::get('/requests/{id}/attachments/{attachment}', [MarvflowRequestController::class, 'downloadAttachment'])->whereNumber(['id', 'attachment'])->middleware('throttle:120,1')->name('requests.attachments.download');
         Route::post('/requests/{id}/status',   [MarvflowRequestController::class, 'updateStatus'])->name('requests.status');
         Route::post('/requests/{id}/assign',   [MarvflowRequestController::class, 'assign'])->name('requests.assign');
 

@@ -39,6 +39,12 @@ class TeamRequest extends Model
         return $this->belongsTo(User::class, 'assigned_to');
     }
 
+    /** Document attachments (original request AND replies). Images stay in attachment_url. */
+    public function attachments()
+    {
+        return $this->hasMany(TeamRequestAttachment::class);
+    }
+
     public function messages()
     {
         return $this->hasMany(TeamRequestMessage::class)->orderBy('created_at', 'asc');
