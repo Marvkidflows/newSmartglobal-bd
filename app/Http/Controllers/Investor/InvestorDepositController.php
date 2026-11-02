@@ -107,6 +107,13 @@ class InvestorDepositController extends Controller
             'status'                => 'pending',
         ]);
 
+        // Financial Team §1B: a declared, not-yet-cleared deposit is its own ledger classification (no money has moved).
+        app(\App\Services\Ledger\WalletLedger::class)->record([
+            'entry_key' => "deposit:{$deposit->id}:pending", 'user_id' => $user->id, 'classification' => 'pending_deposit', 'direction' => 'info',
+            'amount' => $validated['amount'], 'deposit_id' => $deposit->id, 'reference' => $reference, 'actor_id' => $user->id, 'actor_name' => $user->name ?? 'Investor',
+            'note' => 'Deposit declared; awaiting verification of receipt and clearance',
+        ]);
+
         // Fire Telegram to agent immediately so agent knows to expect this payment
        
 // With this:

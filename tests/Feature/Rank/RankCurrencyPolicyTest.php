@@ -44,7 +44,7 @@ class RankCurrencyPolicyTest extends RankTestCase
     private function bronzeDraft(): int
     {
         return $this->actingAs($this->admin, 'sanctum')->postJson('/api/admin/ranks/criteria',
-            $this->payload('bronze', [$this->cond('total_invested', '>=', 100), $this->cond('completed_investment_count', '>=', 1)], ['is_active' => false]))
+            $this->payload('bronze', [$this->cond('current_eligible_principal', '>=', 100), $this->cond('completed_investment_count', '>=', 1)], ['is_active' => false]))
             ->assertCreated()->json('criterion.id');
     }
 
@@ -74,7 +74,7 @@ class RankCurrencyPolicyTest extends RankTestCase
             ->assertJsonPath('currency_gate.blockers.0.action.path', '/admin/ranks/policy');
 
         $msg = $res->json('currency_gate.blockers.0.message');
-        $this->assertStringContainsString('Total invested amount', $msg);
+        $this->assertStringContainsString('Current eligible principal', $msg);
         $this->assertStringContainsString('has not been confirmed', $msg);
         $this->assertStringContainsString('Financial Team reviews', $msg);
         $this->assertFalse(RankCriterion::find($id)->is_active);

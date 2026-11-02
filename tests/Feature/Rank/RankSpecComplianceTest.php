@@ -48,7 +48,7 @@ class RankSpecComplianceTest extends RankTestCase
     {
         foreach (self::CORE as $key => [$amount, $cycles]) {
             $this->createCriterion($key, [
-                $this->cond('total_invested', '>=', $amount),
+                $this->cond('current_eligible_principal', '>=', $amount),
                 $this->cond('completed_investment_count', '>=', $cycles),
             ]);
         }
@@ -73,7 +73,7 @@ class RankSpecComplianceTest extends RankTestCase
 
     protected function approvedDeposit(User $u, float $amount): Deposit
     {
-        $d = Deposit::create(['user_id' => $u->id, 'amount' => $amount, 'payment_method' => 'usdt', 'status' => 'approved']);
+        $d = Deposit::create(['user_id' => $u->id, 'amount' => $amount, 'payment_method' => 'bank_transfer', 'status' => 'approved']);
         app(UsdValuationService::class)->record('deposit', $d->id, 'USD', null, null, null, 'Test fixture: verified by Financial', $this->admin, true);
         return $d;
     }
@@ -163,18 +163,22 @@ class RankSpecComplianceTest extends RankTestCase
 
     public function test_core_met_but_an_enabled_additional_requirement_failed_does_not_qualify(): void
     {
+        // Spec §9.3. (Uses "Qualifying investments": total approved deposits can no longer be a rank criterion — see
+        // test_total_approved_deposits_is_reporting_only_and_can_never_affect_rank.)
         $this->activateSpecCore();
         $u = $this->investorWith(10000, 5);
 
-        $this->enableAdditional('approved_deposits_usd');         // Platinum needs $10,000 of approved deposits
+        DB::table('rank_additional_thresholds')->where('criterion_key', 'qualifying_investments')
+            ->where('investor_rank_id', $this->rank('platinum')->id)->update(['value' => 9]);   // Platinum now needs 9 verified investment records
+        $this->enableAdditional('qualifying_investments');
         $c = $this->calc($u);
         $plat = $this->rankRow($c, 'platinum');
 
         $this->assertFalse($plat['qualifies']);                   // spec §9.3
         $this->assertTrue($plat['core']['met']);
-        $this->assertNotEmpty(array_filter($plat['unmet'], fn ($t) => str_contains($t, 'Total approved deposits')));
+        $this->assertNotEmpty(array_filter($plat['unmet'], fn ($t) => str_contains($t, 'Qualifying investments')));
 
-        $this->approvedDeposit($u, 10000);                        // now the verified deposit exists
+        for ($i = 0; $i < 12; $i++) $this->invest($u, 1);          // plenty of verified investment records now exist
         $this->assertTrue($this->rankRow($this->calc($u), 'platinum')['qualifies']);
     }
 
@@ -221,7 +225,7 @@ class RankSpecComplianceTest extends RankTestCase
 
         $this->invest($u, 5000, 30, 'cancelled');                 // cancelled
         $this->invest($u, 5000, 30, 'active', false);             // amount never verified in USD → counts $0
-        Deposit::create(['user_id' => $u->id, 'amount' => 9000, 'payment_method' => 'usdt', 'status' => 'pending']);   // pending deposit
+        Deposit::create(['user_id' => $u->id, 'amount' => 9000, 'payment_method' => 'bank_transfer', 'status' => 'pending']);   // pending deposit
 
         $first = $this->invest($u, 400, 30, 'active');            // genuine
         $dup = DB::table('investment_accounts')->where('id', $first->id)->first();
@@ -231,7 +235,8 @@ class RankSpecComplianceTest extends RankTestCase
         ]);
 
         $c = $this->calc($u);
-        $this->assertEquals(1400.0, $c['core_values']['verified_total_invested_usd']);   // 1000 + 400 only
+        $this->assertEquals(1400.0, $c['core_values']['current_eligible_principal_usd']);   // 1000 + 400 only
+        $this->assertEquals(1402.0, $c['core_values']['verified_total_invested_usd']);      // historical total adds the two $1 completed cycles
         $this->assertSame('silver', $c['calculated_rank']['key']);
         $this->assertNotSame('gold', $c['calculated_rank']['key']);
     }
@@ -242,7 +247,7 @@ class RankSpecComplianceTest extends RankTestCase
         $u = $this->investorWith(100, 1);
         $this->assertSame('bronze', $this->calc($u)['calculated_rank']['key']);
 
-        $this->investCompleted($u, 900);                          // now $1,000 over 2 cycles
+        $this->investCompleted($u, 1.00); $this->invest($u, 900);   // now $1,000 of current principal over 2 cycles
         $this->assertSame('silver', $this->calc($u)['calculated_rank']['key']);
 
         DB::table('investment_accounts')->where('user_id', $u->id)->where('amount', 900)->update(['status' => 'cancelled']);
@@ -358,7 +363,7 @@ class RankSpecComplianceTest extends RankTestCase
         $this->activateSpecCore();
         $u = $this->investorWith(100, 1);
         $this->evaluate($u);
-        $this->investCompleted($u, 900);                          // now Silver-eligible
+        $this->investCompleted($u, 1.00); $this->invest($u, 900);   // now Silver-eligible
         $this->evaluate($u);
 
         $this->assertSame(1, RankReview::pending()->where('investor_id', $u->id)->count());
@@ -424,12 +429,32 @@ class RankSpecComplianceTest extends RankTestCase
         $this->assertSame($this->admin->id, (int) DB::table('rank_additional_history')->value('actor_id'));
     }
 
-    public function test_money_criteria_cannot_be_enabled_until_the_currency_policy_is_confirmed(): void
+    public function test_total_approved_deposits_is_reporting_only_and_can_never_affect_rank(): void
     {
-        $this->withoutCurrencyPolicy();   // the real shipped state: no confirmed policy
-        $this->actingAs($this->admin, 'sanctum')->postJson('/api/admin/ranks/additional-criteria/approved_deposits_usd/enable', ['reason' => 'Management approved'])
-            ->assertStatus(422);
-        $this->assertFalse(RankAdditionalCriterion::where('key', 'approved_deposits_usd')->value('enabled'));
+        // Board decision §5. Refused with the currency policy confirmed AND without it: the reason is the Board rule, not readiness.
+        foreach ([true, false] as $confirmed) {
+            if (!$confirmed) $this->withoutCurrencyPolicy();
+            $this->actingAs($this->admin, 'sanctum')->postJson('/api/admin/ranks/additional-criteria/approved_deposits_usd/enable', ['reason' => 'Management approved'])->assertStatus(422);
+            $this->assertFalse(RankAdditionalCriterion::where('key', 'approved_deposits_usd')->value('enabled'));
+        }
+    }
+
+    public function test_a_database_row_that_says_deposits_are_enabled_is_still_ignored_by_the_engine(): void
+    {
+        $this->activateSpecCore();
+        $u = $this->investorWith(10000, 5);
+        RankAdditionalCriterion::where('key', 'approved_deposits_usd')->update(['enabled' => true]);   // e.g. a legacy staging row
+
+        $this->assertTrue($this->rankRow($this->calc($u), 'platinum')['qualifies'], 'no approved deposit exists, yet deposits must not block the rank');
+        $row = collect($this->actingAs($this->admin, 'sanctum')->getJson('/api/admin/ranks/additional-criteria')->json('criteria'))->firstWhere('key', 'approved_deposits_usd');
+        $this->assertFalse($row['may_affect_rank']);
+        $this->assertFalse($row['in_effect']);
+    }
+
+    public function test_the_retired_active_investment_criterion_cannot_be_enabled(): void
+    {
+        $this->actingAs($this->admin, 'sanctum')->postJson('/api/admin/ranks/additional-criteria/active_investment_usd/enable', ['reason' => 'Management approved'])->assertStatus(422);
+        $this->assertFalse(RankAdditionalCriterion::where('key', 'active_investment_usd')->value('enabled'));
     }
 
     public function test_core_drafts_load_inactive_and_never_activate(): void
@@ -441,7 +466,7 @@ class RankSpecComplianceTest extends RankTestCase
         $this->assertSame(0, RankCriterion::where('is_active', true)->count());
         $gold = RankCriterion::where('investor_rank_id', $this->rank('gold')->id)->with('conditions')->firstOrFail();
         $this->assertEquals(
-            ['total_invested' => 5000.0, 'completed_investment_count' => 3.0],
+            ['current_eligible_principal' => 5000.0, 'completed_investment_count' => 3.0],
             $gold->conditions->mapWithKeys(fn ($c) => [$c->field => (float) $c->value])->all()
         );
 

@@ -30,7 +30,12 @@ class AdminCustomEmail extends Mailable
         // 'financial' brands the email as coming from the Financial Team
         // (display name, header and footer). null/'admin' = unchanged.
         public ?string $department = null,
-    ) {}
+    ) {
+        // LAST line of defence before the Blade view prints this raw ({!! !!}), covering EVERY caller and any row stored before the
+        // controllers sanitised. It must be the PROPERTY that is cleaned: Laravel merges a Mailable's public properties into the view
+        // data AFTER ->with(), so a sanitised value passed through ->with() alone would be overridden by the raw property.
+        $this->bodyHtml = app(\App\Services\RichTextSanitizer::class)->sanitizeEmail($bodyHtml);
+    }
 
     public function build()
     {
@@ -38,7 +43,7 @@ class AdminCustomEmail extends Mailable
             ->view('emails.admin-custom')
             ->with([
                 'subject'    => $this->emailSubject,
-                'bodyHtml'   => $this->bodyHtml,
+                'bodyHtml'   => $this->bodyHtml,          // already sanitised in the constructor (see above)
                 'department' => $this->department,
             ]);
 

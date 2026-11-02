@@ -217,7 +217,7 @@ class RankCriteriaService
             $exception = ValidationException::withMessages($messages);
 
             // Currency-policy problems also carry WHAT is missing and WHERE to fix it, so the screen can offer a direct link.
-            $gate = collect($result['conflicts'])->filter(fn ($c) => str_starts_with((string) ($c['type'] ?? ''), 'currency_'))
+            $gate = collect($result['conflicts'])->filter(fn ($c) => str_starts_with((string) ($c['type'] ?? ''), 'currency_') || ($c['type'] ?? '') === 'principal_policy')
                 ->map(fn ($c) => array_intersect_key($c, array_flip(['type', 'message', 'action', 'details'])))->values()->all();
             if ($gate) {
                 $exception->response = response()->json([

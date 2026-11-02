@@ -16,6 +16,7 @@ class Message extends Model
         'investor_id',
         'subject',
         'body',
+        'body_html',
         'initiated_by',
         'department',
         'sender_label',

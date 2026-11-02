@@ -21,6 +21,9 @@ use App\Http\Controllers\Marvflow\MarvflowDashboardController;
 use App\Http\Controllers\Marvflow\MarvflowRequestController;
 use App\Http\Controllers\Marvflow\MarvflowTeamController;
 use App\Http\Controllers\Marvflow\MarvflowProfileController;
+use App\Http\Controllers\Marvflow\MarvflowMessageController;
+use App\Http\Controllers\MarvflowInboxController;
+use App\Http\Middleware\EnsureMessagingAccountActive;
 
 // Admin
 use App\Http\Controllers\Admin\AdminDashboardController;
@@ -37,6 +40,9 @@ use App\Http\Controllers\Admin\RankApprovalController;
 use App\Http\Controllers\Admin\RankAdditionalCriteriaController;
 use App\Http\Controllers\Admin\RankStandingController;
 use App\Http\Controllers\Investor\InvestorRankController;
+use App\Http\Controllers\Investor\InvestorBenefitController;
+use App\Http\Controllers\Admin\RankBenefitController;
+use App\Http\Controllers\Admin\LoanAdminController;
 use App\Http\Controllers\Admin\AdminInvestmentController;
 use App\Http\Controllers\Admin\AdminEmailVerificationController;
 use App\Http\Controllers\Admin\AdminSectorController;
@@ -187,6 +193,15 @@ Route::middleware('auth:sanctum')->group(function () {
         
         Route::get('/rank', [InvestorRankController::class, 'show'])->name('rank.show');
         Route::get('/rank/criteria', [InvestorRankController::class, 'criteria'])->name('rank.criteria');
+        // Rank benefits & privileges, consent, loan pathway (own data only).
+        Route::get('/rank/benefits', [InvestorBenefitController::class, 'show'])->name('rank.benefits');
+        Route::get('/rank/report', [InvestorBenefitController::class, 'report'])->name('rank.report');
+        Route::get('/rank/plan-terms', [InvestorBenefitController::class, 'allPlanTerms'])->name('rank.plan-terms.all');
+        Route::get('/rank/plan-terms/{plan}', [InvestorBenefitController::class, 'planTerms'])->whereNumber('plan')->name('rank.plan-terms');
+        Route::put('/rank/consent', [InvestorBenefitController::class, 'consent'])->middleware('throttle:30,1')->name('rank.consent');
+        Route::get('/loans', [InvestorBenefitController::class, 'loans'])->name('loans.index');
+        Route::post('/loans', [InvestorBenefitController::class, 'apply'])->middleware('throttle:10,1')->name('loans.apply');
+        Route::post('/loans/{application}/withdraw', [InvestorBenefitController::class, 'withdraw'])->whereNumber('application')->middleware('throttle:10,1')->name('loans.withdraw');
         Route::get('/notifications',                      [NotificationController::class, 'index'])
             ->name('notifications.index');
         Route::post('/notifications/{notification}/read', [NotificationController::class, 'markAsRead'])
@@ -202,7 +217,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/messages',           [MessageController::class, 'investorIndex'])->name('messages.index');
         Route::get('/messages/create',    [MessageController::class, 'investorCreate'])->name('messages.create');
         Route::get('/messages/unread-count', [MessageController::class, 'investorUnreadCount'])->name('messages.unread-count');
-        Route::post('/messages',          [MessageController::class, 'investorStore'])->name('messages.store');
+        // 60 posts/minute per user (approved): investors can now submit formatted HTML, so unbounded posting is not acceptable.
+        Route::post('/messages',          [MessageController::class, 'investorStore'])->middleware('throttle:60,1')->name('messages.store');
         Route::get('/messages/{message}', [MessageController::class, 'investorShow'])->name('messages.show');
         
         
@@ -340,6 +356,27 @@ Route::get('/investor/deposits/{deposit}',          [InvestorDepositController::
             Route::post('/investors/{user}/reinstate',     [RankStandingController::class, 'reinstate'])->whereNumber('user')->middleware('throttle:30,1')->name('investors.reinstate');
             Route::get('/export',                          [RankStandingController::class, 'export'])->middleware('throttle:10,1')->name('export');
 
+            // ── Benefits catalogue, incentive terms, lending programme (Gates ranks.* / loans.* re-checked in each action) ──
+            Route::get('/benefits',                          [RankBenefitController::class, 'index'])->name('benefits.index');
+            Route::get('/benefits/history',                  [RankBenefitController::class, 'history'])->name('benefits.history');
+            Route::get('/benefits/export',                   [RankBenefitController::class, 'export'])->middleware('throttle:10,1')->name('benefits.export');
+            Route::post('/benefits',                         [RankBenefitController::class, 'store'])->middleware('throttle:30,1')->name('benefits.store');
+            Route::put('/benefits/{benefit}',                [RankBenefitController::class, 'update'])->whereNumber('benefit')->middleware('throttle:30,1')->name('benefits.update');
+            Route::post('/benefits/{benefit}/status',        [RankBenefitController::class, 'status'])->whereNumber('benefit')->middleware('throttle:30,1')->name('benefits.status');
+            Route::post('/principal-policy',                 [RankBenefitController::class, 'policyRecord'])->middleware('throttle:10,1')->name('principal-policy.record');
+            Route::post('/incentives',                       [RankBenefitController::class, 'incentiveStore'])->middleware('throttle:30,1')->name('incentives.store');
+            Route::put('/incentives/{term}',                 [RankBenefitController::class, 'incentiveUpdate'])->whereNumber('term')->middleware('throttle:30,1')->name('incentives.update');
+            Route::post('/incentives/{term}/submit',         [RankBenefitController::class, 'incentiveSubmit'])->whereNumber('term')->middleware('throttle:30,1')->name('incentives.submit');
+            Route::post('/incentives/{term}/approve',        [RankBenefitController::class, 'incentiveApprove'])->whereNumber('term')->middleware('throttle:30,1')->name('incentives.approve');
+            Route::post('/incentives/{term}/activate',       [RankBenefitController::class, 'incentiveActivate'])->whereNumber('term')->middleware('throttle:30,1')->name('incentives.activate');
+            Route::post('/incentives/{term}/disable',        [RankBenefitController::class, 'incentiveDisable'])->whereNumber('term')->middleware('throttle:30,1')->name('incentives.disable');
+            Route::get('/loans/settings',                    [LoanAdminController::class, 'settings'])->name('loans.settings');
+            Route::put('/loans/settings',                    [LoanAdminController::class, 'configure'])->middleware('throttle:20,1')->name('loans.configure');
+            Route::get('/loans/applications',                [LoanAdminController::class, 'index'])->name('loans.applications');
+            Route::post('/loans/applications/{application}/review',  [LoanAdminController::class, 'review'])->whereNumber('application')->middleware('throttle:30,1')->name('loans.review');
+            Route::post('/loans/applications/{application}/approve', [LoanAdminController::class, 'approve'])->whereNumber('application')->middleware('throttle:30,1')->name('loans.approve');
+            Route::post('/loans/applications/{application}/reject',  [LoanAdminController::class, 'reject'])->whereNumber('application')->middleware('throttle:30,1')->name('loans.reject');
+
             Route::get('/runs',                      [RankEvaluationRunController::class, 'index'])->name('runs.index');
             Route::post('/runs',                     [RankEvaluationRunController::class, 'store'])->middleware('throttle:5,1')->name('runs.store');
             Route::get('/runs/{run}',                [RankEvaluationRunController::class, 'show'])->whereNumber('run')->name('runs.show');
@@ -360,6 +397,12 @@ Route::get('/investor/deposits/{deposit}',          [InvestorDepositController::
         Route::get('/dev-requests/{id}',          [DevRequestController::class, 'show'])->name('dev-requests.show');
         Route::post('/dev-requests/{id}/reply',   [DevRequestController::class, 'reply'])->name('dev-requests.reply');
         Route::get('/dev-requests/{id}/attachments/{attachment}', [DevRequestController::class, 'downloadAttachment'])->whereNumber(['id', 'attachment'])->middleware('throttle:120,1')->name('dev-requests.attachments.download');
+
+        // Messages FROM the MarvFlow team to the SSI Admin inbox (the inbox is fixed by the route, not by the client).
+        Route::get('/marvflow-messages',               [MarvflowInboxController::class, 'index'])->defaults('inbox', 'admin')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.index');
+        Route::get('/marvflow-messages/unread-count',  [MarvflowInboxController::class, 'unreadCount'])->defaults('inbox', 'admin')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.unread');
+        Route::get('/marvflow-messages/{id}',          [MarvflowInboxController::class, 'show'])->whereNumber('id')->defaults('inbox', 'admin')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.show');
+        Route::post('/marvflow-messages/{id}/reply',   [MarvflowInboxController::class, 'reply'])->whereNumber('id')->defaults('inbox', 'admin')->middleware('throttle:30,1')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.reply');
 
         // Admin <-> Financial shared channel — one conversation, both
         // sides post and read the same thread.
@@ -611,6 +654,12 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         Route::post('/dev-requests/{id}/reply',   [DevRequestController::class, 'reply'])->name('dev-requests.reply');
         Route::get('/dev-requests/{id}/attachments/{attachment}', [DevRequestController::class, 'downloadAttachment'])->whereNumber(['id', 'attachment'])->middleware('throttle:120,1')->name('dev-requests.attachments.download');
 
+        // Messages FROM the MarvFlow team to the SSI Financial Team inbox.
+        Route::get('/marvflow-messages',               [MarvflowInboxController::class, 'index'])->defaults('inbox', 'financial')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.index');
+        Route::get('/marvflow-messages/unread-count',  [MarvflowInboxController::class, 'unreadCount'])->defaults('inbox', 'financial')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.unread');
+        Route::get('/marvflow-messages/{id}',          [MarvflowInboxController::class, 'show'])->whereNumber('id')->defaults('inbox', 'financial')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.show');
+        Route::post('/marvflow-messages/{id}/reply',   [MarvflowInboxController::class, 'reply'])->whereNumber('id')->defaults('inbox', 'financial')->middleware('throttle:30,1')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.reply');
+
         // Admin <-> Financial shared channel — same table/controller as
         // the admin side; one shared conversation, not per-user threads.
         Route::get('/staff-messages',  [StaffMessageController::class, 'index'])->name('staff-messages.index');
@@ -659,6 +708,21 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         Route::get('/currency/summary',                          [CurrencyVerificationController::class, 'summary'])->name('currency.summary');
         Route::get('/currency/records',                          [CurrencyVerificationController::class, 'index'])->name('currency.records');
         Route::post('/currency/records/{type}/{id}/verify',      [CurrencyVerificationController::class, 'verify'])->whereIn('type', ['investment', 'deposit'])->whereNumber('id')->middleware('throttle:120,1')->name('currency.verify');
+
+        // Financial Team controls (27 Oct 2026): position-level principal, withdrawal classification, flags, reconciliation, rate register.
+        Route::get('/ranks/investors/{investor}/positions',        [\App\Http\Controllers\Financial\FinancialControlsController::class, 'positions'])->whereNumber('investor')->name('controls.positions');
+        Route::post('/positions/{investment}/flag',                [\App\Http\Controllers\Financial\FinancialControlsController::class, 'flag'])->whereNumber('investment')->middleware('throttle:30,1')->name('controls.flag');
+        Route::post('/positions/{investment}/unflag',              [\App\Http\Controllers\Financial\FinancialControlsController::class, 'unflag'])->whereNumber('investment')->middleware('throttle:30,1')->name('controls.unflag');
+        Route::post('/positions/{investment}/release',             [\App\Http\Controllers\Financial\FinancialControlsController::class, 'release'])->whereNumber('investment')->middleware('throttle:30,1')->name('controls.release');
+        Route::post('/positions/{investment}/return-to-wallet',    [\App\Http\Controllers\Financial\FinancialControlsController::class, 'returnToWallet'])->whereNumber('investment')->middleware('throttle:20,1')->name('controls.return');
+        Route::post('/positions/{investment}/external-payout',     [\App\Http\Controllers\Financial\FinancialControlsController::class, 'externalPayout'])->whereNumber('investment')->middleware('throttle:20,1')->name('controls.payout');
+        Route::post('/positions/{investment}/correction',          [\App\Http\Controllers\Financial\FinancialControlsController::class, 'correct'])->whereNumber('investment')->middleware('throttle:20,1')->name('controls.correction');
+        Route::post('/withdrawals/{withdrawal}/classify',          [\App\Http\Controllers\Financial\FinancialControlsController::class, 'classifyWithdrawal'])->whereNumber('withdrawal')->middleware('throttle:30,1')->name('controls.classify');
+        Route::get('/reconciliation',                              [\App\Http\Controllers\Financial\FinancialControlsController::class, 'reconciliation'])->name('controls.reconciliation');
+        Route::post('/reconciliation/scan',                        [\App\Http\Controllers\Financial\FinancialControlsController::class, 'scan'])->middleware('throttle:5,1')->name('controls.scan');
+        Route::post('/reconciliation/{item}/resolve',              [\App\Http\Controllers\Financial\FinancialControlsController::class, 'resolve'])->whereNumber('item')->middleware('throttle:30,1')->name('controls.resolve');
+        Route::get('/fx-sources',                                  [\App\Http\Controllers\Financial\FinancialControlsController::class, 'sources'])->name('controls.sources');
+        Route::post('/fx-sources',                                 [\App\Http\Controllers\Financial\FinancialControlsController::class, 'storeSource'])->middleware('throttle:10,1')->name('controls.sources.store');
         Route::get('/currency/supported',                        [CurrencyVerificationController::class, 'supported'])->name('currency.supported');
         Route::get('/currency/rates',                            [CurrencyVerificationController::class, 'rates'])->name('currency.rates');
         Route::post('/currency/bulk-verify',                     [CurrencyVerificationController::class, 'bulkVerify'])->middleware('throttle:20,1')->name('currency.bulk-verify');
@@ -780,6 +844,15 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         Route::post('/requests/{id}/reply',    [MarvflowRequestController::class, 'reply'])->name('requests.reply');
         Route::get('/requests/{id}/attachments/{attachment}', [MarvflowRequestController::class, 'downloadAttachment'])->whereNumber(['id', 'attachment'])->middleware('throttle:120,1')->name('requests.attachments.download');
         Route::post('/requests/{id}/status',   [MarvflowRequestController::class, 'updateStatus'])->name('requests.status');
+
+        // Direct messages to SSI Admin / Financial Team (static paths before {id}).
+        Route::get('/messages/recipients',     [MarvflowMessageController::class, 'recipients'])->middleware(EnsureMessagingAccountActive::class)->name('messages.recipients');
+        Route::get('/messages/unread-count',   [MarvflowMessageController::class, 'unreadCount'])->middleware(EnsureMessagingAccountActive::class)->name('messages.unread-count');
+        Route::get('/messages',                [MarvflowMessageController::class, 'index'])->middleware(EnsureMessagingAccountActive::class)->name('messages.index');
+        Route::post('/messages',               [MarvflowMessageController::class, 'store'])->middleware('throttle:20,1')->middleware(EnsureMessagingAccountActive::class)->name('messages.store');
+        Route::post('/messages/direct',        [MarvflowMessageController::class, 'storeDirect'])->middleware('throttle:30,1')->middleware(EnsureMessagingAccountActive::class)->name('messages.direct');
+        Route::get('/messages/{id}',           [MarvflowMessageController::class, 'show'])->whereNumber('id')->middleware(EnsureMessagingAccountActive::class)->name('messages.show');
+        Route::post('/messages/{id}/reply',    [MarvflowMessageController::class, 'reply'])->whereNumber('id')->middleware('throttle:30,1')->middleware(EnsureMessagingAccountActive::class)->name('messages.reply');
         Route::post('/requests/{id}/assign',   [MarvflowRequestController::class, 'assign'])->name('requests.assign');
 
         Route::middleware('marvflow.lead')->group(function () {

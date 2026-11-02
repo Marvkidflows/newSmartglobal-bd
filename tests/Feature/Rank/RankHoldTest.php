@@ -19,8 +19,8 @@ class RankHoldTest extends RankTestCase
         parent::setUp();
         $this->inv = $this->investor();
         $this->invest($this->inv, 2000);
-        $this->goldId = $this->createCriterion('gold', [$this->cond('total_invested', '>=', 1000)])['criterion']['id'];
-        $this->createCriterion('silver', [$this->cond('total_invested', '>=', 100)]);
+        $this->goldId = $this->createCriterion('gold', [$this->cond('current_eligible_principal', '>=', 1000)])['criterion']['id'];
+        $this->createCriterion('silver', [$this->cond('current_eligible_principal', '>=', 100)]);
         $this->engine()->evaluateUser($this->inv->id);
         $this->assertSame('gold', $this->freshRank($this->inv));
     }
@@ -90,7 +90,7 @@ class RankHoldTest extends RankTestCase
 
         // Rename only: same conditions → hold stays.
         $this->putJson("/api/admin/ranks/criteria/{$this->goldId}", [
-            'name' => 'Gold (renamed)', 'logic' => 'all', 'conditions' => [$this->cond('total_invested', '>=', 1000)],
+            'name' => 'Gold (renamed)', 'logic' => 'all', 'conditions' => [$this->cond('current_eligible_principal', '>=', 1000)],
         ])->assertOk();
         $this->engine()->evaluateUser($this->inv->id);
         $this->assertSame('silver', $this->freshRank($this->inv));
@@ -98,7 +98,7 @@ class RankHoldTest extends RankTestCase
 
         // Real change to the rule's conditions → explicit criteria change, legitimate re-evaluation.
         $this->putJson("/api/admin/ranks/criteria/{$this->goldId}", [
-            'name' => 'Gold (renamed)', 'logic' => 'all', 'conditions' => [$this->cond('total_invested', '>=', 1500)],
+            'name' => 'Gold (renamed)', 'logic' => 'all', 'conditions' => [$this->cond('current_eligible_principal', '>=', 1500)],
         ])->assertOk();
         $this->engine()->evaluateUser($this->inv->id);
         $this->assertSame('gold', $this->freshRank($this->inv));
@@ -121,7 +121,7 @@ class RankHoldTest extends RankTestCase
     {
         // Raise the bar above what the investor has → they no longer qualify for Gold.
         $this->putJson("/api/admin/ranks/criteria/{$this->goldId}", [
-            'name' => 'Gold', 'logic' => 'all', 'conditions' => [$this->cond('total_invested', '>=', 9000)],
+            'name' => 'Gold', 'logic' => 'all', 'conditions' => [$this->cond('current_eligible_principal', '>=', 9000)],
         ])->assertOk();
 
         $this->downgradeToSilver()->assertOk();                                     // no override needed

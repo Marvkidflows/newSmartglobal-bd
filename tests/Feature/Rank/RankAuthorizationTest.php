@@ -72,7 +72,7 @@ class RankAuthorizationTest extends RankTestCase
     public function test_each_state_changing_action_is_protected_by_the_intended_gate(): void
     {
         $investor = $this->investor();
-        $crit   = $this->createCriterion('bronze', [$this->cond('total_invested', '>=', 100)], ['is_active' => false])['criterion']['id'];
+        $crit   = $this->createCriterion('bronze', [$this->cond('current_eligible_principal', '>=', 100)], ['is_active' => false])['criterion']['id'];
         $review = RankDowngradeReview::create([
             'investor_id' => $investor->id, 'investor_rank_id' => $this->rank('bronze')->id, 'rank_criterion_id' => $crit,
             'criterion_version' => 1, 'fingerprint' => sha1('x'), 'failed_conditions' => [], 'status' => 'open',
@@ -86,13 +86,13 @@ class RankAuthorizationTest extends RankTestCase
             ['POST',   "/api/admin/ranks/investors/{$investor->id}/assign",    $body,                                  'ranks.assign'],
             ['POST',   "/api/admin/ranks/investors/{$investor->id}/downgrade", $body,                                  'ranks.downgrade'],
             ['POST',   "/api/admin/ranks/reviews/{$review->id}/retain",        ['reason' => 'Authorization test'],     'ranks.downgrade'],
-            ['POST',   '/api/admin/ranks/criteria',                            $this->payload('silver', [$this->cond('total_invested', '>=', 1)]), 'ranks.manage-criteria'],
-            ['PUT',    "/api/admin/ranks/criteria/{$crit}",                    ['name' => 'X', 'logic' => 'all', 'conditions' => [$this->cond('total_invested', '>=', 5)]], 'ranks.manage-criteria'],
+            ['POST',   '/api/admin/ranks/criteria',                            $this->payload('silver', [$this->cond('current_eligible_principal', '>=', 1)]), 'ranks.manage-criteria'],
+            ['PUT',    "/api/admin/ranks/criteria/{$crit}",                    ['name' => 'X', 'logic' => 'all', 'conditions' => [$this->cond('current_eligible_principal', '>=', 5)]], 'ranks.manage-criteria'],
             ['POST',   "/api/admin/ranks/criteria/{$crit}/activate",           [],                                     'ranks.manage-criteria'],
             ['POST',   "/api/admin/ranks/criteria/{$crit}/deactivate",         [],                                     'ranks.manage-criteria'],
             ['DELETE', "/api/admin/ranks/criteria/{$crit}",                    ['reason' => 'Authorization test'],     'ranks.manage-criteria'],
-            ['POST',   '/api/admin/ranks/criteria/validate',                   $this->payload('gold', [$this->cond('total_invested', '>=', 1)]), 'ranks.manage-criteria'],
-            ['POST',   '/api/admin/ranks/criteria/preview',                    $this->payload('gold', [$this->cond('total_invested', '>=', 1)]), 'ranks.manage-criteria'],
+            ['POST',   '/api/admin/ranks/criteria/validate',                   $this->payload('gold', [$this->cond('current_eligible_principal', '>=', 1)]), 'ranks.manage-criteria'],
+            ['POST',   '/api/admin/ranks/criteria/preview',                    $this->payload('gold', [$this->cond('current_eligible_principal', '>=', 1)]), 'ranks.manage-criteria'],
             ['POST',   '/api/admin/ranks/runs',                                [],                                     'ranks.manage-criteria'],
             ['POST',   "/api/admin/ranks/runs/{$run->id}/resume",              [],                                     'ranks.manage-criteria'],
             ['POST',   '/api/admin/ranks/alerts/retry',                        [],                                     'ranks.manage-criteria'],

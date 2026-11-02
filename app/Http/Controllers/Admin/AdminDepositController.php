@@ -176,8 +176,17 @@ class AdminDepositController extends Controller
                     'reason'         => "Deposit #{$locked->id} approved",
                 ]);
 
-                // Activate the investment if a plan was attached to this deposit
-                if ($locked->investment_plan_id && !\App\Models\InvestmentAccount::where('source_deposit_id', $locked->id)->exists()) {
+                // Financial Team §1: an approved deposit is recorded as cleared, available wallet cash (separate ledger classification).
+                app(\App\Services\Ledger\WalletLedger::class)->record([
+                    'entry_key' => "deposit:{$locked->id}:cleared", 'user_id' => $user->id, 'classification' => 'cleared_wallet_funds', 'direction' => 'credit',
+                    'amount' => $locked->amount, 'deposit_id' => $locked->id, 'reference' => $locked->transaction_reference, 'balance_after' => $balanceAfter,
+                    'actor_id' => $request->user()->id, 'actor_name' => $request->user()->name ?? 'Staff', 'note' => 'Approved deposit recorded as available wallet cash',
+                ]);
+
+                // Activate the investment if a plan was attached to this deposit — UNLESS deposit approval is separated from investment
+                // activation (Financial Team §1, flag financial.separate_deposit_approval): then the funds stay wallet cash and an investment is
+                // created only by a separate, validated allocation, so the same money is never both cash and active principal.
+                if (!config('financial.separate_deposit_approval') && $locked->investment_plan_id && !\App\Models\InvestmentAccount::where('source_deposit_id', $locked->id)->exists()) {
                     $plan = \App\Models\InvestmentPlan::find($locked->investment_plan_id);
 
                     if ($plan) {

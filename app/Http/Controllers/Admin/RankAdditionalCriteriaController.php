@@ -86,7 +86,7 @@ class RankAdditionalCriteriaController extends Controller
                     'logic' => 'all', 'is_active' => false,
                     'reason' => 'Loaded core thresholds from the official SSI specification as an inactive draft',
                     'conditions' => [
-                        ['field' => 'total_invested', 'operator' => '>=', 'value' => $def['min_amount'], 'group_no' => 1],
+                        ['field' => \App\Services\Rank\CoreRequirements::AMOUNT_FIELD, 'operator' => '>=', 'value' => $def['min_amount'], 'group_no' => 1],
                         ['field' => 'completed_investment_count', 'operator' => '>=', 'value' => $def['min_cycles'], 'group_no' => 1],
                     ],
                 ], $request->user());

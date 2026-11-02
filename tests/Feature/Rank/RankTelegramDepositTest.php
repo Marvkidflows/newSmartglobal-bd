@@ -568,9 +568,9 @@ class RankTelegramDepositTest extends RankTestCase
         foreach ([0, 1, 2] as $i) $this->complete($this->fundedInvestment($u, ['paid_amount' => 2000000 + $i, 'paid_currency' => 'NGN', 'rate' => 0.00065]), $i);
         $this->assertSame('silver', $this->rankOf($u));
 
-        // A GBP deposit pushes it to exactly $5,000+ with 4 cycles → Gold.
-        $this->complete($this->fundedInvestment($u, ['paid_amount' => 880, 'paid_currency' => 'GBP', 'rate' => 1.25]), 3);   // +$1,100 = $5,000
-        $this->assertEquals(5000.0, $this->facts($u)['total_usd']);
+        // The rank amount is CURRENT principal: a still-active GBP position of exactly $5,000 with the 3 completed cycles → Gold.
+        $this->fundedInvestment($u, ['paid_amount' => 4000, 'paid_currency' => 'GBP', 'rate' => 1.25]);   // stays active: $5,000
+        $this->assertEquals(5000.0, $this->facts($u)['current_principal']);
         $this->assertSame('gold', $this->rankOf($u));
     }
 
@@ -578,7 +578,8 @@ class RankTelegramDepositTest extends RankTestCase
     {
         $this->artisan('ranks:load-proposed --activate')->assertSuccessful();
         $u = $this->investor();
-        $this->complete($this->fundedInvestment($u, ['paid_amount' => 100, 'paid_currency' => 'USD', 'rate' => null]), 0);
+        $this->complete($this->fundedInvestment($u, ['paid_amount' => 100, 'paid_currency' => 'USD', 'rate' => null]), 0);   // 1 cycle
+        $this->fundedInvestment($u, ['paid_amount' => 101, 'paid_currency' => 'USD', 'rate' => null]);                      // active principal $101
         $this->assertSame('bronze', $this->rankOf($u));
         $this->record($this->pending($u, 90000), ['paid_amount' => 90000, 'paid_currency' => 'USD', 'rate' => null])->assertOk();
         $this->assertSame('bronze', $this->rankOf($u));
@@ -630,7 +631,7 @@ class RankTelegramDepositTest extends RankTestCase
         $expected = ['bronze' => [100, 1], 'silver' => [1000, 2], 'gold' => [5000, 3], 'platinum' => [10000, 5], 'diamond' => [20000, 8], 'elite' => [50000, 12]];
         foreach ($expected as $key => [$amt, $cyc]) {
             $c = \App\Models\RankCriterion::with('conditions')->where('investor_rank_id', $this->rank($key)->id)->sole();
-            $this->assertEquals($amt, (float) $c->conditions->firstWhere('field', 'total_invested')->value);
+            $this->assertEquals($amt, (float) $c->conditions->firstWhere('field', 'current_eligible_principal')->value);
             $this->assertEquals($cyc, (float) $c->conditions->firstWhere('field', 'completed_investment_count')->value);
         }
     }

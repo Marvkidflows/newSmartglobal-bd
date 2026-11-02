@@ -85,7 +85,7 @@ class LoadProposedRankCriteria extends Command
                     'is_active'        => false,   // always created as a draft; activation (below) is a separate, ordered step
                     'reason'           => 'Loaded PROPOSED criteria in a development environment (pending Management approval)',
                     'conditions'       => [
-                        ['field' => 'total_invested',            'operator' => '>=', 'value' => $def['min_amount'], 'group_no' => 1],
+                        ['field' => \App\Services\Rank\CoreRequirements::AMOUNT_FIELD, 'operator' => '>=', 'value' => $def['min_amount'], 'group_no' => 1],
                         ['field' => 'completed_investment_count', 'operator' => '>=', 'value' => $def['min_cycles'], 'group_no' => 1],
                     ],
                 ], $admin);

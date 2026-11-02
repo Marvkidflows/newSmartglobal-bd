@@ -24,23 +24,30 @@ class InvestorRankProgress
 
     public function for(User $user): array
     {
-        $facts   = $this->ledger->forUsers([$user->id])[$user->id];
+        $facts   = $this->ledger->forUsers([$user->id], true)[$user->id];
         $ranks   = InvestorRank::orderBy('level')->get();
         $current = $user->investor_rank_id ? $ranks->firstWhere('id', $user->investor_rank_id) : null;
         $next    = $ranks->first(fn ($r) => $r->level > ($current?->level ?? 0));
         $usable  = $this->engine->activeCriteria()->keyBy('investor_rank_id');
 
         $out = [
-            'current_amount_usd'   => $facts['total_usd'],
+            'current_amount_usd'   => $facts['current_principal'],      // Current eligible principal (verified) — the monetary rank measure
+            'historical_total_usd' => $facts['total_usd'],              // reporting only; never decides rank
+            'calculation'          => [
+                'calculated_at' => $facts['calculated_at'], 'positions' => $facts['breakdown'], 'cycle_references' => $facts['cycle_references'],
+            ],
             'completed_cycles'     => $facts['cycles'],
             'excluded' => [
                 'awaiting_verification' => count($facts['unverified']) + count($facts['stale']),
+                'under_review'          => count($facts['blocked']),
+                'cycles_awaiting_verification' => count($facts['cycles_awaiting_verification']),
                 'possible_duplicates'   => count($facts['duplicates']),
             ],
             'last_evaluation_at'   => RankEvaluationRun::whereNull('target_level')->whereIn('status', ['completed', 'completed_with_errors'])
                                         ->latest('finished_at')->first()?->finished_at?->toIso8601String(),
             'rank_changed_at'      => $user->rank_changed_at?->toIso8601String(),
             'next_rank'            => $next?->badge(),
+            'approval_required'    => (bool) config('ranks.require_approval', true),   // true: eligibility raises a review; a person approves the rank
             'state'                => 'highest',
             'amount'               => null,
             'cycles'               => null,
@@ -56,14 +63,14 @@ class InvestorRankProgress
         if ($c['logic'] === 'all') {
             foreach ($c['conditions'] as $x) {
                 if ($x['operator'] !== '>=') continue;
-                if ($x['field'] === 'total_invested') $minAmount = (float) $x['value'];
+                if ($x['field'] === \App\Services\Rank\CoreRequirements::AMOUNT_FIELD) $minAmount = (float) $x['value'];
                 if ($x['field'] === 'completed_investment_count') $minCycles = (int) $x['value'];
             }
         }
 
         $parts = [];
         if ($minAmount !== null) {
-            $out['amount'] = $this->bar($facts['total_usd'], $minAmount, 2); $parts[] = $out['amount']['percent'];
+            $out['amount'] = $this->bar($facts['current_principal'], $minAmount, 2); $parts[] = $out['amount']['percent'];
         }
         if ($minCycles !== null) {
             $out['cycles'] = $this->bar($facts['cycles'], $minCycles, 0); $parts[] = $out['cycles']['percent'];

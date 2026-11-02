@@ -48,7 +48,7 @@ class RankDecisionsTest extends RankTestCase
         $this->actingAs($this->admin, 'sanctum');
 
         $draft = $this->postJson('/api/admin/ranks/criteria',
-            $this->payload('bronze', [$this->cond('total_invested', '>=', 100)], ['is_active' => false]))->assertCreated();
+            $this->payload('bronze', [$this->cond('current_eligible_principal', '>=', 100)], ['is_active' => false]))->assertCreated();
         $id = $draft->json('criterion.id');
 
         $this->postJson("/api/admin/ranks/criteria/{$id}/activate")
@@ -57,7 +57,7 @@ class RankDecisionsTest extends RankTestCase
 
         // creating one directly as active is refused too, and nothing is stored
         $this->postJson('/api/admin/ranks/criteria',
-            $this->payload('silver', [$this->cond('total_invested', '>=', 1000)]))->assertStatus(422);
+            $this->payload('silver', [$this->cond('current_eligible_principal', '>=', 1000)]))->assertStatus(422);
         $this->assertSame(1, RankCriterion::count());
     }
 
@@ -65,11 +65,11 @@ class RankDecisionsTest extends RankTestCase
     {
         $this->unconfirmed();
         $res = $this->actingAs($this->admin, 'sanctum')->postJson('/api/admin/ranks/criteria',
-            $this->payload('bronze', [$this->cond('total_invested', '>=', 100)]));
+            $this->payload('bronze', [$this->cond('current_eligible_principal', '>=', 100)]));
 
         $res->assertStatus(422);
         $this->assertStringContainsString('currency', implode(' ', $res->json('errors.conflicts')));
-        $this->assertStringContainsString('Total invested amount', implode(' ', $res->json('errors.conflicts')));
+        $this->assertStringContainsString('Current eligible principal', implode(' ', $res->json('errors.conflicts')));
     }
 
     public function test_criteria_that_do_not_measure_money_are_unaffected_by_the_currency_gate(): void
@@ -87,7 +87,7 @@ class RankDecisionsTest extends RankTestCase
         $this->unconfirmed();
         $this->actingAs($this->admin, 'sanctum');
         $id = $this->postJson('/api/admin/ranks/criteria',
-            $this->payload('bronze', [$this->cond('total_invested', '>=', 100)], ['is_active' => false]))->json('criterion.id');
+            $this->payload('bronze', [$this->cond('current_eligible_principal', '>=', 100)], ['is_active' => false]))->json('criterion.id');
 
         $this->confirmCurrencyPolicyForTests();                        // Management confirmed in the app
         $this->postJson("/api/admin/ranks/criteria/{$id}/activate")->assertOk();
@@ -98,7 +98,7 @@ class RankDecisionsTest extends RankTestCase
     {
         $this->unconfirmed();
         $this->actingAs($this->admin, 'sanctum');
-        $body = $this->payload('bronze', [$this->cond('total_invested', '>=', 100)]);
+        $body = $this->payload('bronze', [$this->cond('current_eligible_principal', '>=', 100)]);
 
         $this->postJson('/api/admin/ranks/criteria/validate', $body)
             ->assertOk()->assertJsonPath('valid', false)->assertJsonPath('conflicts.0.type', 'currency_unconfirmed');
@@ -107,7 +107,7 @@ class RankDecisionsTest extends RankTestCase
 
     public function test_the_engine_ignores_money_criteria_while_the_currency_is_unconfirmed_even_if_active(): void
     {
-        $this->createCriterion('bronze', [$this->cond('total_invested', '>=', 100), $this->cond('completed_investment_count', '>=', 1)]);
+        $this->createCriterion('bronze', [$this->cond('current_eligible_principal', '>=', 100), $this->cond('completed_investment_count', '>=', 1)]);
         $this->unconfirmed();                                           // e.g. the flag is switched off later
 
         $inv = $this->investorWith(500, 1);
@@ -155,22 +155,24 @@ class RankDecisionsTest extends RankTestCase
             ->assertJsonPath('currency_confirmed', false)->assertJsonPath('ranking_currency', 'USD');
 
         $fields = collect($this->getJson('/api/admin/ranks/criteria/schema')->json('fields'))->keyBy('key');
-        foreach (['total_invested', 'active_investment_amount', 'total_approved_deposits'] as $money) {
-            $this->assertTrue($fields[$money]['monetary'], "$money is money");
+        $this->assertTrue($fields['current_eligible_principal']['monetary'], 'current eligible principal is money');
+        foreach (['total_invested', 'active_investment_amount', 'total_approved_deposits'] as $reporting) {
+            $this->assertArrayNotHasKey($reporting, $fields, "$reporting is reporting-only and is not offered in the rule builder");
         }
         foreach (['completed_investment_count', 'investment_count', 'kyc_verified', 'account_age_days'] as $other) {
             $this->assertFalse($fields[$other]['monetary'], "$other is not money");
         }
     }
 
-    // ── Decision 2: cumulative non-cancelled amount ─────────────────────────────────
+    // ── Decision 2 (superseded by the Board: current verified eligible principal) ─────────────────
 
-    public function test_investment_amount_is_the_cumulative_total_of_active_and_completed_excluding_cancelled(): void
+    public function test_the_historical_total_is_the_cumulative_total_of_active_and_completed_excluding_cancelled(): void
     {
+        // Reporting only: this figure never decides rank (Board §1). Kept with its original fixture and expectation.
         $inv = $this->investor();
         $this->invest($inv, 300, 30, 'active');
         $this->investCompleted($inv, 200);                               // completed, term elapsed
-        $this->invest($inv, 100, 30, 'completed');                       // completed, term NOT elapsed — still money invested
+        $this->invest($inv, 100, 30, 'completed');                       // completed, term NOT elapsed
         $this->invest($inv, 5000, 30, 'cancelled');                      // never counts
 
         $total = app(RankFieldRegistry::class)->resolveMany([$inv->id], ['total_invested'])[$inv->id]['total_invested'];
@@ -178,9 +180,23 @@ class RankDecisionsTest extends RankTestCase
         $this->assertEquals(600.00, $total);
     }
 
+    public function test_current_eligible_principal_counts_only_active_positions(): void
+    {
+        $inv = $this->investor();
+        $this->invest($inv, 300, 30, 'active');
+        $this->investCompleted($inv, 200);                               // completed: its principal is no longer an active position
+        $this->invest($inv, 100, 30, 'completed');                       // completed (term not elapsed): not active either
+        $this->invest($inv, 5000, 30, 'cancelled');                      // never counts
+
+        $v = app(RankFieldRegistry::class)->resolveMany([$inv->id], ['current_eligible_principal', 'completed_investment_count'])[$inv->id];
+
+        $this->assertEquals(300.00, $v['current_eligible_principal']);
+        $this->assertEquals(1, $v['completed_investment_count'], 'the matured completed cycle still counts; the un-matured one does not');
+    }
+
     public function test_cancelling_an_investment_removes_it_from_the_total_and_flags_but_never_downgrades(): void
     {
-        $this->createCriterion('bronze', [$this->cond('total_invested', '>=', 500)]);
+        $this->createCriterion('bronze', [$this->cond('current_eligible_principal', '>=', 500)]);
         $inv = $this->investor();
         $a = $this->invest($inv, 600);                                   // arrives with the rule live → Bronze
         $this->engine()->evaluateUser($inv->id);
@@ -197,7 +213,7 @@ class RankDecisionsTest extends RankTestCase
     public function test_a_downward_amount_correction_flags_for_review_and_does_not_downgrade(): void
     {
         // The audited Financial correction changes the amount through the model; the rank module just reacts.
-        $this->createCriterion('bronze', [$this->cond('total_invested', '>=', 500)]);
+        $this->createCriterion('bronze', [$this->cond('current_eligible_principal', '>=', 500)]);
         $inv = $this->investor();
         $a = $this->invest($inv, 600);
         $this->assertSame('bronze', $this->freshRank($inv));

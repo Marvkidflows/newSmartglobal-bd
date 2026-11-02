@@ -123,4 +123,18 @@ return [
         'name' => env('MAIL_FROM_NAME', 'Example'),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Inline (cid:) images in Email Center emails — OPT-IN
+    |--------------------------------------------------------------------------
+    |
+    | Gmail/Outlook block data: images, so uploaded images can be converted to inline cid: attachments when an email is sent
+    | (App\Services\EmailImageEmbedder). It is OFF by default: enable it on STAGING only (MAIL_EMBED_INLINE_IMAGES=true), send
+    | yourself a test email through the real mailer and confirm the image displays inline (and is not shown as a stray attachment)
+    | before enabling it anywhere else. The app sends through the Brevo API transport, whose handling of cid: parts is unverified.
+    |
+    */
+
+    'embed_inline_images' => env('MAIL_EMBED_INLINE_IMAGES', false),
+
 ];

@@ -53,7 +53,7 @@ class RankReviewService
         if (!$target) return;
 
         $same = $pending->first(fn ($p) => (int) $p->proposed_rank_id === (int) $target->investor_rank_id);
-        $snapshot = $this->snapshot($target, $result);
+        $snapshot = $this->snapshot($target, $result, $user->id);
         $basis    = $this->basisHash($target);
 
         if ($same) {
@@ -93,6 +93,9 @@ class RankReviewService
         ]);
 
         DB::afterCommit(fn () => SendRankReviewNotificationJob::dispatch($review->id));
+
+        // Bronze → Silver eligibility notice to the investor (only if management enabled that benefit; never blocks the review).
+        DB::afterCommit(fn () => \App\Jobs\SendNextRankNoticeJob::dispatch($review->id));
     }
 
     // ── Human decisions ──────────────────────────────────────────────────────
@@ -144,6 +147,7 @@ class RankReviewService
                 $user, $current?->id, $proposed->id, InvestorRankChange::APPROVED_UPGRADE, $actor, $reason,
                 ['review_id' => $review->id, 'review_reference' => $review->reference, 'prerequisites' => $prereq,
                  'criterion' => $this->audit->criterionSnapshot($criterion), 'evaluation' => $result,
+                 'calculation' => $this->audit->calculationSnapshot($user->id),
                  'proposed_evaluation' => $review->evaluation],
                 null, $review->evaluation_run_id,
             );
@@ -225,9 +229,10 @@ class RankReviewService
         ])->save();
     }
 
-    protected function snapshot(RankCriterion $c, ?array $result): array
+    protected function snapshot(RankCriterion $c, ?array $result, ?int $investorId = null): array
     {
-        return ['criterion' => $this->audit->criterionSnapshot($c), 'evaluation' => $result, 'evaluated_at' => now()->toIso8601String()];
+        return ['criterion' => $this->audit->criterionSnapshot($c), 'evaluation' => $result, 'evaluated_at' => now()->toIso8601String()]
+            + ($investorId ? ['calculation' => $this->audit->calculationSnapshot($investorId)] : []);
     }
 
     /** Identity of "these rules for this rank" — a rejection stands until the rules themselves change. */

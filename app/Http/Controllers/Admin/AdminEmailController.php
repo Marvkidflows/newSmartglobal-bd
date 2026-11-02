@@ -10,6 +10,8 @@ use App\Models\EmailTemplate;
 use App\Models\SentEmail;
 use App\Models\User;
 use App\Notifications\EmailReceivedNotification;
+use App\Services\RichTextSanitizer;
+use Illuminate\Validation\ValidationException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
@@ -100,14 +102,14 @@ class AdminEmailController extends Controller
         $validated = $request->validate([
             'investor_id' => ['required', 'exists:users,id'],
             'subject'     => ['required', 'string', 'max:255'],
-            'body_html'   => ['required', 'string'],
+            'body_html'   => ['required', 'string', 'max:' . self::BODY_MAX],
             'attachment'  => ['nullable', 'file', 'max:10240'], // 10MB
         ]);
 
         $investor = User::findOrFail($validated['investor_id']);
 
         return response()->json(
-            $this->dispatchEmail($request, $investor, $validated['subject'], $validated['body_html'])
+            $this->dispatchEmail($request, $investor, $validated['subject'], $this->safeEmailHtml($validated['body_html']))
         );
     }
 
@@ -117,8 +119,9 @@ class AdminEmailController extends Controller
     {
         $validated = $request->validate([
             'subject'   => ['required', 'string', 'max:255'],
-            'body_html' => ['required', 'string'],
+            'body_html' => ['required', 'string', 'max:' . self::BODY_MAX],
         ]);
+        $validated['body_html'] = $this->safeEmailHtml($validated['body_html']);
 
         $admin = $request->user();
 
@@ -221,11 +224,13 @@ class AdminEmailController extends Controller
     {
         $validated = $request->validate([
             'subject'   => ['required', 'string', 'max:255'],
-            'body_html' => ['required', 'string'],
+            'body_html' => ['required', 'string', 'max:' . self::BODY_MAX],
             'filter'    => ['required', 'in:all,active,suspended,frozen,pending_kyc,verified,country,plan'],
             'country'   => ['nullable', 'string'],
             'plan_id'   => ['nullable', 'exists:investment_plans,id'],
         ]);
+
+        $validated['body_html'] = $this->safeEmailHtml($validated['body_html']);      // sanitised once, before any row is created
 
         $recipients = $this->resolveBulkQuery($request)->get();
 
@@ -299,7 +304,8 @@ class AdminEmailController extends Controller
     // GET /admin/email-center/templates
     public function templatesIndex()
     {
-        return response()->json(['templates' => EmailTemplate::latest()->get()]);
+        // Stored HTML is sanitised again on the way OUT (display only — the stored row is never rewritten).
+        return response()->json(['templates' => EmailTemplate::latest()->get()->each(fn ($t) => $t->body_html = $this->displayHtml($t->body_html))]);
     }
 
     // POST /admin/email-center/templates
@@ -309,8 +315,9 @@ class AdminEmailController extends Controller
             'name'      => ['required', 'string', 'max:255'],
             'category'  => ['nullable', 'string', 'max:100'],
             'subject'   => ['required', 'string', 'max:255'],
-            'body_html' => ['required', 'string'],
+            'body_html' => ['required', 'string', 'max:' . self::BODY_MAX],
         ]);
+        $validated['body_html'] = $this->safeEmailHtml($validated['body_html']);
 
         $validated['created_by'] = $request->user()->id;
 
@@ -326,8 +333,9 @@ class AdminEmailController extends Controller
             'name'      => ['sometimes', 'string', 'max:255'],
             'category'  => ['nullable', 'string', 'max:100'],
             'subject'   => ['sometimes', 'string', 'max:255'],
-            'body_html' => ['sometimes', 'string'],
+            'body_html' => ['sometimes', 'string', 'max:' . self::BODY_MAX],
         ]);
+        if (isset($validated['body_html'])) $validated['body_html'] = $this->safeEmailHtml($validated['body_html']);
 
         $template->update($validated);
 
@@ -362,6 +370,7 @@ class AdminEmailController extends Controller
 
         $perPage = (int) $request->get('per_page', 20);
         $logs = $query->paginate($perPage);
+        $logs->getCollection()->each(fn ($e) => $e->body_html = $this->displayHtml($e->body_html));
 
         return response()->json($logs);
     }
@@ -370,6 +379,31 @@ class AdminEmailController extends Controller
     public function logsShow(SentEmail $sentEmail)
     {
         $sentEmail->load(['admin:id,name', 'investor:id,name,full_name,email']);
+        $sentEmail->body_html = $this->displayHtml($sentEmail->body_html);       // display-only; the stored row is untouched
         return response()->json(['email' => $sentEmail]);
+    }
+
+    // ── HTML safety (Email Center) ──────────────────────────────────────
+
+    /** Largest email body accepted on write, in characters (≈ 1.5 MB, including any embedded images). */
+    public const BODY_MAX = 1572864;
+
+    /**
+     * Sanitise composed email HTML (email profile) BEFORE it is stored, queued or sent. Previously this HTML was stored and mailed
+     * as-is and later injected into the investor dashboard. A body that is empty once unsafe content is removed is refused.
+     */
+    protected function safeEmailHtml(string $html): string
+    {
+        $safe = app(RichTextSanitizer::class)->sanitizeEmail($html);
+        if ($safe === '') {
+            throw ValidationException::withMessages(['body_html' => ['The email body is empty once unsafe or unsupported content is removed.']]);
+        }
+        return $safe;
+    }
+
+    /** Sanitise stored HTML for display (never rewrites the stored value). */
+    protected function displayHtml(?string $html): string
+    {
+        return ($html === null || trim($html) === '') ? '' : app(RichTextSanitizer::class)->sanitizeEmail($html);
     }
 }

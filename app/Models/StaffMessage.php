@@ -10,7 +10,7 @@ class StaffMessage extends Model
 {
     use HasFactory;
 
-    protected $fillable = ['sender_id', 'body'];
+    protected $fillable = ['sender_id', 'subject', 'body', 'body_html'];
 
     public function sender()
     {

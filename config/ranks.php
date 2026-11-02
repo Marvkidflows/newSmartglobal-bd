@@ -62,6 +62,17 @@ return [
     'require_active_account' => (bool) env('RANKS_REQUIRE_ACTIVE_ACCOUNT', true),
     'require_verified_kyc'   => (bool) env('RANKS_REQUIRE_VERIFIED_KYC', true),
 
+    // A criterion that measures current eligible principal cannot be ACTIVATED until the Financial controls are enabled and the formal
+    // sign-offs are recorded (PrincipalPolicy). Leave true in every real environment; the test suite switches it off except in the tests
+    // that cover the gate itself.
+    'require_principal_policy' => (bool) env('RANKS_REQUIRE_PRINCIPAL_POLICY', true),
+
+    // MASTER SWITCH for rank-based incentives (ROI differentiation, loyalty bonuses). OFF by default. The framework forbids
+    // applying any rank-specific return without written management approval, so even an approved incentive term cannot be
+    // activated until this is turned on — a Management / financial-policy decision, not a developer one. Note: even when
+    // active, incentive terms are configuration records only; this module does not apply them to payouts.
+    'incentives_activation_enabled' => (bool) env('RANKS_INCENTIVES_ACTIVATION_ENABLED', false),
+
     // Investors processed per queued chunk during a re-evaluation run.
     'chunk_size' => (int) env('RANKS_CHUNK_SIZE', 200),
 

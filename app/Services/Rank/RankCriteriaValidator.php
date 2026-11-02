@@ -63,6 +63,11 @@ class RankCriteriaValidator
                 continue;
             }
 
+            if (!($def['rank_rule'] ?? true)) {
+                $errors["$p.field"][] = "'{$def['label']}' is a reporting metric and cannot be used in a rank rule.";
+                continue;
+            }
+
             $allowed = RankFieldRegistry::operatorsForType($def['type']);
             if (!in_array($c['operator'], $allowed, true)) {
                 $errors["$p.operator"][] = "Operator '{$c['operator']}' cannot be used with '{$def['label']}'. Allowed: "
@@ -111,6 +116,13 @@ class RankCriteriaValidator
                     foreach (app(CurrencyPolicyService::class)->blockers($money->all()) as $blocker) {
                         $conflicts[] = $blocker;
                     }
+                }
+            }
+
+            // Money rules need the Financial controls + formal sign-offs before ACTIVATION (see PrincipalPolicy).
+            if ($enforceCurrencyGate && !empty($n['is_active']) && collect($conds)->pluck('field')->intersect(PrincipalPolicy::FIELDS)->isNotEmpty()) {
+                foreach (app(PrincipalPolicy::class)->blockers() as $blocker) {
+                    $conflicts[] = $blocker;
                 }
             }
 

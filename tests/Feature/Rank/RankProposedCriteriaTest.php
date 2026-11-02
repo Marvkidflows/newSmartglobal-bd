@@ -61,8 +61,8 @@ class RankProposedCriteriaTest extends RankTestCase
             $this->assertSame('all', $c->logic, "$key logic");
             $byField = $c->conditions->keyBy('field');
             $this->assertCount(2, $c->conditions, "$key condition count");
-            $this->assertSame('>=', $byField['total_invested']->operator);
-            $this->assertEquals($amount, $byField['total_invested']->value, "$key amount");
+            $this->assertSame('>=', $byField['current_eligible_principal']->operator);
+            $this->assertEquals($amount, $byField['current_eligible_principal']->value, "$key amount");
             $this->assertSame('>=', $byField['completed_investment_count']->operator);
             $this->assertEquals($cycles, $byField['completed_investment_count']->value, "$key cycles");
             $this->assertStringContainsString('PROPOSED', $c->description);
@@ -223,10 +223,11 @@ class RankProposedCriteriaTest extends RankTestCase
         $stale = $this->invest($inv, 50, 30, 'completed');                       // completed, no end date at all
         DB::table('investment_accounts')->where('id', $stale->id)->update(['end_date' => null]);
 
-        $v = app(RankFieldRegistry::class)->resolveMany([$inv->id], ['total_invested', 'completed_investment_count'])[$inv->id];
+        $v = app(RankFieldRegistry::class)->resolveMany([$inv->id], ['total_invested', 'current_eligible_principal', 'completed_investment_count'])[$inv->id];
 
         $this->assertSame(1, $v['completed_investment_count']);    // only the genuine cycle
-        $this->assertEquals(1050.0, $v['total_invested']);         // cancelled excluded; others recorded
+        $this->assertEquals(1050.0, $v['total_invested']);         // historical total: cancelled excluded; others recorded
+        $this->assertEquals(300.0, $v['current_eligible_principal']);   // current principal: only the still-running position
         $this->assertNotNull($early);
     }
 
@@ -235,6 +236,7 @@ class RankProposedCriteriaTest extends RankTestCase
         $this->loadProposed();
         $inv = $this->investor();
         // 2 investments of 600 flipped to "completed" immediately (term not elapsed) → 0 genuine cycles
+        $this->invest($inv, 1200, 30, 'active');   // plenty of current principal, so ONLY the cycle rule can be what blocks the rank
         $this->invest($inv, 600, 30, 'completed');
         $this->invest($inv, 600, 30, 'completed');
         $this->engine()->evaluateUser($inv->id);
@@ -246,6 +248,7 @@ class RankProposedCriteriaTest extends RankTestCase
     {
         $this->loadProposed();
         $inv = $this->investor();
+        $this->invest($inv, 500, 30, 'active');                                  // current principal, so only the cycle rule is in question
         $a = $this->invest($inv, 500, 30, 'completed');                          // completed early: term not over
         $this->engine()->evaluateUser($inv->id);
         $this->assertNull($this->freshRank($inv));
@@ -427,7 +430,7 @@ class RankProposedCriteriaTest extends RankTestCase
         $this->putJson("/api/admin/ranks/criteria/{$goldId}", [
             'name' => 'Gold (updated by Admin)', 'logic' => 'all', 'reason' => 'Management revised the threshold',
             'conditions' => [
-                $this->cond('total_invested', '>=', 4000),
+                $this->cond('current_eligible_principal', '>=', 4000),
                 $this->cond('completed_investment_count', '>=', 3),
             ],
         ])->assertOk();
@@ -452,7 +455,7 @@ class RankProposedCriteriaTest extends RankTestCase
         $goldId = RankCriterion::where('investor_rank_id', $this->rank('gold')->id)->value('id');
         $this->putJson("/api/admin/ranks/criteria/{$goldId}", [
             'name' => 'Gold', 'logic' => 'all',
-            'conditions' => [$this->cond('total_invested', '>=', 8000), $this->cond('completed_investment_count', '>=', 3)],
+            'conditions' => [$this->cond('current_eligible_principal', '>=', 8000), $this->cond('completed_investment_count', '>=', 3)],
         ])->assertOk();
         $this->engine()->evaluateUser($inv->id);
 
@@ -483,17 +486,17 @@ class RankProposedCriteriaTest extends RankTestCase
 
         $this->assertSame('Completed investment cycles', $fields['completed_investment_count']['label']);
         $this->assertSame('integer', $fields['completed_investment_count']['type']);
-        $this->assertSame('USD', $fields['total_invested']['unit']);                       // the ranking currency is fixed
-        $this->assertStringContainsString('verified', strtolower($fields['total_invested']['label']));
-        $this->assertContains('>=', $fields['total_invested']['operators']);
-        $this->assertContains('between', $fields['total_invested']['operators']);          // hard upper limits possible
+        $this->assertSame('USD', $fields['current_eligible_principal']['unit']);                       // the ranking currency is fixed
+        $this->assertStringContainsString('verified', strtolower($fields['current_eligible_principal']['label']));
+        $this->assertContains('>=', $fields['current_eligible_principal']['operators']);
+        $this->assertContains('between', $fields['current_eligible_principal']['operators']);          // hard upper limits possible
     }
 
     public function test_a_hard_upper_band_can_be_configured_in_the_dashboard_if_management_wants_it(): void
     {
         $this->actingAs($this->admin, 'sanctum');
         $this->createCriterion('bronze', [
-            $this->cond('total_invested', 'between', [100, 999]),
+            $this->cond('current_eligible_principal', 'between', [100, 999]),
             $this->cond('completed_investment_count', '>=', 1),
         ]);
 
@@ -543,9 +546,9 @@ class RankProposedCriteriaTest extends RankTestCase
         $this->assertNull($row->previous_rank_id);
         $this->assertTrue($row->criteria_snapshot['prerequisites']['eligible'] ?? true);
         $conds = collect($row->criteria_snapshot['evaluation']['conditions'])->keyBy('field');
-        $this->assertEquals(20000, $conds['total_invested']['actual']);
+        $this->assertEquals(20000, $conds['current_eligible_principal']['actual']);
         $this->assertSame(8, $conds['completed_investment_count']['actual']);
-        $this->assertTrue($conds['total_invested']['passed'] && $conds['completed_investment_count']['passed']);
+        $this->assertTrue($conds['current_eligible_principal']['passed'] && $conds['completed_investment_count']['passed']);
     }
 
     public function test_ranks_never_change_balances_profits_withdrawals_or_financial_records(): void
@@ -590,7 +593,7 @@ class RankProposedCriteriaTest extends RankTestCase
 
         foreach ([$this->investor(), User::factory()->create(['role' => 'financial', 'status' => 'active'])] as $u) {
             $this->actingAs($u, 'sanctum');
-            $this->putJson("/api/admin/ranks/criteria/{$id}", ['name' => 'x', 'logic' => 'all', 'conditions' => [$this->cond('total_invested', '>=', 1)]])->assertStatus(403);
+            $this->putJson("/api/admin/ranks/criteria/{$id}", ['name' => 'x', 'logic' => 'all', 'conditions' => [$this->cond('current_eligible_principal', '>=', 1)]])->assertStatus(403);
             $this->postJson("/api/admin/ranks/criteria/{$id}/deactivate")->assertStatus(403);
         }
         $this->assertSame($before, RankCriterion::find($id)->version);

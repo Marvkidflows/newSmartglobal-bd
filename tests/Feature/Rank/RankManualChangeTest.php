@@ -56,7 +56,7 @@ class RankManualChangeTest extends RankTestCase
     public function test_manual_assignment_is_checked_against_active_criteria_and_override_is_off_by_default(): void
     {
         $u = $this->investor(); $this->invest($u, 100);
-        $this->createCriterion('gold', [$this->cond('total_invested', '>=', 5000)]);
+        $this->createCriterion('gold', [$this->cond('current_eligible_principal', '>=', 5000)]);
 
         $res = $this->assign($u, 'gold', ['override' => true, 'override_justification' => 'CEO approved exception']);
         $res->assertStatus(422)->assertJsonValidationErrors('override');
@@ -67,7 +67,7 @@ class RankManualChangeTest extends RankTestCase
     {
         config(['ranks.allow_manual_override' => true]);
         $u = $this->investor(); $this->invest($u, 100);
-        $this->createCriterion('gold', [$this->cond('total_invested', '>=', 5000)]);
+        $this->createCriterion('gold', [$this->cond('current_eligible_principal', '>=', 5000)]);
 
         $this->assign($u, 'gold')->assertStatus(422)->assertJsonValidationErrors('override');
         $this->assign($u, 'gold', ['override' => true, 'override_justification' => 'short'])
@@ -121,10 +121,10 @@ class RankManualChangeTest extends RankTestCase
     public function test_admin_decides_a_review_by_downgrading_and_the_review_is_closed(): void
     {
         $u = $this->investor(); $this->invest($u, 2000);
-        $gold = $this->createCriterion('gold', [$this->cond('total_invested', '>=', 1000)])['criterion']['id'];
-        $this->createCriterion('silver', [$this->cond('total_invested', '>=', 500)]);
+        $gold = $this->createCriterion('gold', [$this->cond('current_eligible_principal', '>=', 1000)])['criterion']['id'];
+        $this->createCriterion('silver', [$this->cond('current_eligible_principal', '>=', 500)]);
         app(RankEvaluationService::class)->evaluateUser($u->id);
-        $this->putJson("/api/admin/ranks/criteria/{$gold}", ['name' => 'Gold', 'logic' => 'all', 'conditions' => [$this->cond('total_invested', '>=', 9000)]])->assertOk();
+        $this->putJson("/api/admin/ranks/criteria/{$gold}", ['name' => 'Gold', 'logic' => 'all', 'conditions' => [$this->cond('current_eligible_principal', '>=', 9000)]])->assertOk();
         app(RankEvaluationService::class)->evaluateUser($u->id);
 
         $this->getJson('/api/admin/ranks/reviews')->assertOk()->assertJsonPath('meta.total', 1);
@@ -140,9 +140,9 @@ class RankManualChangeTest extends RankTestCase
     public function test_admin_can_retain_the_rank_on_review_and_the_decision_is_audited_without_repeat_alerts(): void
     {
         $u = $this->investor(); $this->invest($u, 2000);
-        $gold = $this->createCriterion('gold', [$this->cond('total_invested', '>=', 1000)])['criterion']['id'];
+        $gold = $this->createCriterion('gold', [$this->cond('current_eligible_principal', '>=', 1000)])['criterion']['id'];
         app(RankEvaluationService::class)->evaluateUser($u->id);
-        $this->putJson("/api/admin/ranks/criteria/{$gold}", ['name' => 'Gold', 'logic' => 'all', 'conditions' => [$this->cond('total_invested', '>=', 9000)]]);
+        $this->putJson("/api/admin/ranks/criteria/{$gold}", ['name' => 'Gold', 'logic' => 'all', 'conditions' => [$this->cond('current_eligible_principal', '>=', 9000)]]);
         app(RankEvaluationService::class)->evaluateUser($u->id);
         $review = RankDowngradeReview::sole();
 
@@ -187,7 +187,7 @@ class RankManualChangeTest extends RankTestCase
     public function test_investor_detail_shows_history_and_standing_against_active_rules(): void
     {
         $u = $this->investor(); $this->invest($u, 100);
-        $this->createCriterion('gold', [$this->cond('total_invested', '>=', 5000)]);
+        $this->createCriterion('gold', [$this->cond('current_eligible_principal', '>=', 5000)]);
         $this->assign($u, 'bronze')->assertOk();
 
         $res = $this->getJson("/api/admin/ranks/investors/{$u->id}")->assertOk();

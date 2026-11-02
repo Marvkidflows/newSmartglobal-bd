@@ -108,25 +108,32 @@ class InvestorInvestmentController extends Controller
             return back()->withErrors(['amount' => 'Insufficient balance.']);
         }
 
-        $durationDays   = $plan->duration_days ?? (($plan->duration_months ?? 1) * 30);
-        $profitPercent  = $plan->profit_percentage ?? $plan->profit_percent ?? 0;
-        $expectedProfit = $validated['amount'] * ($profitPercent / 100);
-        $totalReturn    = $validated['amount'] + $expectedProfit;
+        if (app(\App\Services\Ledger\WalletLedger::class)->enabled()) {
+            // Financial Team §1A/§1B: validate the wallet, record the selection and plan terms, debit the wallet and create the position as ONE
+            // controlled transaction under row locks, with linked ledger entries. Nothing is written if any step fails.
+            [$investment, , $profitPercent] = app(\App\Services\Ledger\InvestmentAllocationService::class)->allocate($user, $plan, (float) $validated['amount']);
+            $expectedProfit = (float) $investment->expected_profit;
+        } else {
+            $durationDays   = $plan->duration_days ?? (($plan->duration_months ?? 1) * 30);
+            $profitPercent  = $plan->profit_percentage ?? $plan->profit_percent ?? 0;
+            $expectedProfit = $validated['amount'] * ($profitPercent / 100);
+            $totalReturn    = $validated['amount'] + $expectedProfit;
 
-        $investment = InvestmentAccount::create([
-            'user_id'            => $user->id,
-            'investment_plan_id' => $plan->id,
-            'amount'             => $validated['amount'],
-            'profit_percentage'  => $profitPercent,
-            'expected_profit'    => $expectedProfit,
-            'total_return'       => $totalReturn,
-            'status'             => 'active',
-            'start_date'         => now(),
-            'end_date'           => now()->addDays($durationDays),
-            'remaining_days'     => $durationDays,
-        ]);
+            $investment = InvestmentAccount::create([
+                'user_id'            => $user->id,
+                'investment_plan_id' => $plan->id,
+                'amount'             => $validated['amount'],
+                'profit_percentage'  => $profitPercent,
+                'expected_profit'    => $expectedProfit,
+                'total_return'       => $totalReturn,
+                'status'             => 'active',
+                'start_date'         => now(),
+                'end_date'           => now()->addDays($durationDays),
+                'remaining_days'     => $durationDays,
+            ]);
 
-        $user->decrement('balance', $validated['amount']);
+            $user->decrement('balance', $validated['amount']);
+        }
 
         if ($request->expectsJson()) {
             return response()->json([

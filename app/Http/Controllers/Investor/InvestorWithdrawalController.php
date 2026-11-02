@@ -138,6 +138,13 @@ class InvestorWithdrawalController extends Controller
             'status'          => 'pending',
         ]);
 
+        // Financial Team §1B/§2D: a pending withdrawal is its own ledger classification and reduces nothing (no cash, no principal).
+        app(\App\Services\Ledger\WalletLedger::class)->record([
+            'entry_key' => "withdrawal:{$withdrawal->id}:pending", 'user_id' => $user->id, 'classification' => 'pending_withdrawal', 'direction' => 'info',
+            'amount' => $validated['amount'], 'withdrawal_id' => $withdrawal->id, 'actor_id' => $user->id, 'actor_name' => $user->name ?? 'Investor',
+            'note' => 'Withdrawal requested; awaiting approval',
+        ]);
+
         // Telegram + in-app financial team alerts. Previously this
         // controller sent neither — TelegramService::newWithdrawal()
         // existed but was never actually called from anywhere. Wiring

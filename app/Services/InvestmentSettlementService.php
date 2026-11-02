@@ -45,7 +45,14 @@ class InvestmentSettlementService
 
             if ($profit != 0.0) {
                 $user = User::query()->whereKey($locked->user_id)->lockForUpdate()->first();
-                if ($user) $user->increment('balance', $profit);
+                if ($user) {
+                    $user->increment('balance', $profit);
+                    // Financial Team §1B: the profit credited at completion is its own classification. Principal is NOT credited here.
+                    app(\App\Services\Ledger\WalletLedger::class)->record([
+                        'entry_key' => "settle:{$locked->id}:profit", 'user_id' => $user->id, 'classification' => 'profit_credit', 'direction' => 'credit',
+                        'amount' => $profit, 'investment_id' => $locked->id, 'balance_after' => (float) $user->fresh()->balance, 'note' => 'Profit credited at cycle completion (principal untouched)',
+                    ]);
+                }
             }
 
             return ['completed' => true, 'credited' => $profit, 'reason' => null, 'user_id' => $locked->user_id];

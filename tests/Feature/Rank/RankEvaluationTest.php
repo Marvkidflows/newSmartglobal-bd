@@ -22,7 +22,7 @@ class RankEvaluationTest extends RankTestCase
     {
         $u = $this->investor();
         $this->invest($u, 600);
-        $this->createCriterion('silver', [$this->cond('total_invested', '>=', 500)]);
+        $this->createCriterion('silver', [$this->cond('current_eligible_principal', '>=', 500)]);
 
         $this->engine()->evaluateUser($u->id);
 
@@ -44,7 +44,7 @@ class RankEvaluationTest extends RankTestCase
     {
         $u = $this->investor();
         $this->invest($u, 100);
-        $this->createCriterion('silver', [$this->cond('total_invested', '>=', 500)]);
+        $this->createCriterion('silver', [$this->cond('current_eligible_principal', '>=', 500)]);
 
         $this->assertNull($this->engine()->evaluateUser($u->id));
         $this->assertNull($this->freshRank($u));
@@ -56,10 +56,10 @@ class RankEvaluationTest extends RankTestCase
         // Rules first: activating a rule re-evaluates EXISTING investors, so an investor who already
         // had data would (correctly) climb rung by rung as each rule goes live. Here the investor
         // arrives once all four rules are live, so one evaluation must make ONE jump to the highest.
-        $this->createCriterion('silver', [$this->cond('total_invested', '>=', 500)]);
-        $this->createCriterion('gold', [$this->cond('total_invested', '>=', 1000)]);
-        $this->createCriterion('platinum', [$this->cond('total_invested', '>=', 4000)]);
-        $this->createCriterion('diamond', [$this->cond('total_invested', '>=', 9000)]);
+        $this->createCriterion('silver', [$this->cond('current_eligible_principal', '>=', 500)]);
+        $this->createCriterion('gold', [$this->cond('current_eligible_principal', '>=', 1000)]);
+        $this->createCriterion('platinum', [$this->cond('current_eligible_principal', '>=', 4000)]);
+        $this->createCriterion('diamond', [$this->cond('current_eligible_principal', '>=', 9000)]);
         $u = $this->investor();
         $this->invest($u, 5000);
 
@@ -74,7 +74,7 @@ class RankEvaluationTest extends RankTestCase
         $any = $this->investor(); $this->invest($any, 50);
         $none = $this->investor();
         $this->createCriterion('bronze', [
-            $this->cond('total_invested', '>=', 10000), $this->cond('investment_count', '>=', 1),
+            $this->cond('current_eligible_principal', '>=', 10000), $this->cond('investment_count', '>=', 1),
         ], ['logic' => 'any']);
         $this->engine()->evaluateUser($any->id);
         $this->engine()->evaluateUser($none->id);
@@ -83,8 +83,8 @@ class RankEvaluationTest extends RankTestCase
 
         $g = $this->investor(); $this->invest($g, 50);
         $this->createCriterion('silver', [
-            $this->cond('total_invested', '>=', 10000, 1), $this->cond('kyc_verified', '=', true, 1),
-            $this->cond('investment_count', '>=', 1, 2), $this->cond('total_invested', '>=', 40, 2),
+            $this->cond('current_eligible_principal', '>=', 10000, 1), $this->cond('kyc_verified', '=', true, 1),
+            $this->cond('investment_count', '>=', 1, 2), $this->cond('current_eligible_principal', '>=', 40, 2),
         ], ['logic' => 'grouped']);
         $this->engine()->evaluateUser($g->id);
         $this->assertSame('silver', $this->freshRank($g)); // group 2 satisfied; group 1 not needed
@@ -93,7 +93,7 @@ class RankEvaluationTest extends RankTestCase
     public function test_repeated_evaluation_creates_no_duplicate_change_or_notification_record(): void
     {
         $u = $this->investor(); $this->invest($u, 600);
-        $this->createCriterion('silver', [$this->cond('total_invested', '>=', 500)]);
+        $this->createCriterion('silver', [$this->cond('current_eligible_principal', '>=', 500)]);
 
         for ($i = 0; $i < 5; $i++) $this->engine()->evaluateUser($u->id);
 
@@ -103,8 +103,8 @@ class RankEvaluationTest extends RankTestCase
 
     public function test_a_stale_evaluation_cannot_overwrite_a_newer_higher_rank(): void
     {
-        $this->createCriterion('silver', [$this->cond('total_invested', '>=', 500)]);
-        $this->createCriterion('gold', [$this->cond('total_invested', '>=', 1000)]);
+        $this->createCriterion('silver', [$this->cond('current_eligible_principal', '>=', 500)]);
+        $this->createCriterion('gold', [$this->cond('current_eligible_principal', '>=', 1000)]);
 
         // Load only the (lower) Silver rule, as a slow/stale worker would have.
         $stale = $this->engine()->activeCriteria()->filter(fn ($c) => $c->rank->key === 'silver')->values();
@@ -121,7 +121,7 @@ class RankEvaluationTest extends RankTestCase
     public function test_the_database_itself_blocks_two_transitions_from_the_same_state(): void
     {
         $u = $this->investor(); $this->invest($u, 600);
-        $this->createCriterion('silver', [$this->cond('total_invested', '>=', 500)]);
+        $this->createCriterion('silver', [$this->cond('current_eligible_principal', '>=', 500)]);
         $this->engine()->evaluateUser($u->id);
         $first = InvestorRankChange::where('investor_id', $u->id)->sole();
 
@@ -137,13 +137,13 @@ class RankEvaluationTest extends RankTestCase
     {
         $qualifies = $this->investor(); $this->invest($qualifies, 2000);
         $short = $this->investor(); $this->invest($short, 100);
-        $gold = $this->createCriterion('gold', [$this->cond('total_invested', '>=', 5000)])['criterion']['id'];
+        $gold = $this->createCriterion('gold', [$this->cond('current_eligible_principal', '>=', 5000)])['criterion']['id'];
         $this->engine()->evaluateUser($qualifies->id);
         $this->assertNull($this->freshRank($qualifies));
 
         // Admin lowers the threshold → run is queued → investors are re-evaluated.
         $res = $this->putJson("/api/admin/ranks/criteria/{$gold}", [
-            'name' => 'Gold', 'logic' => 'all', 'conditions' => [$this->cond('total_invested', '>=', 1500)],
+            'name' => 'Gold', 'logic' => 'all', 'conditions' => [$this->cond('current_eligible_principal', '>=', 1500)],
         ])->assertOk();
         $this->assertNotNull($res->json('run'));
 
@@ -164,7 +164,7 @@ class RankEvaluationTest extends RankTestCase
         \Illuminate\Support\Facades\Queue::fake(); // drive the chunks by hand, deterministically
         config(['ranks.chunk_size' => 2]);
         $users = collect(range(1, 5))->map(fn () => tap($this->investor(), fn ($u) => $this->invest($u, 900)));
-        $this->createCriterion('silver', [$this->cond('total_invested', '>=', 500)]); // each user may already be handled by triggers
+        $this->createCriterion('silver', [$this->cond('current_eligible_principal', '>=', 500)]); // each user may already be handled by triggers
         $crit = \App\Models\RankCriterion::where('is_active', true)->first();
 
         $run = $this->engine()->startRun('manual', $crit, $this->admin);
@@ -185,13 +185,13 @@ class RankEvaluationTest extends RankTestCase
     public function test_investors_are_never_automatically_downgraded_and_are_flagged_for_review_once(): void
     {
         $u = $this->investor(); $this->invest($u, 2000);
-        $gold = $this->createCriterion('gold', [$this->cond('total_invested', '>=', 1000)])['criterion']['id'];
+        $gold = $this->createCriterion('gold', [$this->cond('current_eligible_principal', '>=', 1000)])['criterion']['id'];
         $this->engine()->evaluateUser($u->id);
         $this->assertSame('gold', $this->freshRank($u));
 
         // Management raises the bar above what the investor has.
         $this->putJson("/api/admin/ranks/criteria/{$gold}", [
-            'name' => 'Gold', 'logic' => 'all', 'conditions' => [$this->cond('total_invested', '>=', 9000)],
+            'name' => 'Gold', 'logic' => 'all', 'conditions' => [$this->cond('current_eligible_principal', '>=', 9000)],
         ])->assertOk();
 
         for ($i = 0; $i < 4; $i++) $this->engine()->evaluateUser($u->id);
@@ -206,11 +206,11 @@ class RankEvaluationTest extends RankTestCase
     public function test_making_a_live_rule_stricter_flags_existing_holders_without_a_manual_run(): void
     {
         $u = $this->investor(); $this->invest($u, 2000);
-        $gold = $this->createCriterion('gold', [$this->cond('total_invested', '>=', 1000)])['criterion']['id'];
+        $gold = $this->createCriterion('gold', [$this->cond('current_eligible_principal', '>=', 1000)])['criterion']['id'];
         $this->assertSame('gold', $this->freshRank($u));
 
         $this->putJson("/api/admin/ranks/criteria/{$gold}", [
-            'name' => 'Gold', 'logic' => 'all', 'conditions' => [$this->cond('total_invested', '>=', 9000)],
+            'name' => 'Gold', 'logic' => 'all', 'conditions' => [$this->cond('current_eligible_principal', '>=', 9000)],
         ])->assertOk();
 
         // No explicit evaluateUser(): the criteria-change run itself must cover current holders.
@@ -221,9 +221,9 @@ class RankEvaluationTest extends RankTestCase
     public function test_review_clears_itself_if_the_investor_qualifies_again(): void
     {
         $u = $this->investor(); $this->invest($u, 2000);
-        $gold = $this->createCriterion('gold', [$this->cond('total_invested', '>=', 1000)])['criterion']['id'];
+        $gold = $this->createCriterion('gold', [$this->cond('current_eligible_principal', '>=', 1000)])['criterion']['id'];
         $this->engine()->evaluateUser($u->id);
-        $this->putJson("/api/admin/ranks/criteria/{$gold}", ['name' => 'Gold', 'logic' => 'all', 'conditions' => [$this->cond('total_invested', '>=', 9000)]]);
+        $this->putJson("/api/admin/ranks/criteria/{$gold}", ['name' => 'Gold', 'logic' => 'all', 'conditions' => [$this->cond('current_eligible_principal', '>=', 9000)]]);
         $this->engine()->evaluateUser($u->id);
         $this->assertSame(1, RankDowngradeReview::open()->count());
 
@@ -235,7 +235,7 @@ class RankEvaluationTest extends RankTestCase
     public function test_deactivating_criteria_never_changes_existing_ranks(): void
     {
         $u = $this->investor(); $this->invest($u, 2000);
-        $id = $this->createCriterion('gold', [$this->cond('total_invested', '>=', 1000)])['criterion']['id'];
+        $id = $this->createCriterion('gold', [$this->cond('current_eligible_principal', '>=', 1000)])['criterion']['id'];
         $this->engine()->evaluateUser($u->id);
 
         $this->postJson("/api/admin/ranks/criteria/{$id}/deactivate")->assertOk();
@@ -247,7 +247,7 @@ class RankEvaluationTest extends RankTestCase
     public function test_investment_event_triggers_evaluation_for_that_investor(): void
     {
         $u = $this->investor();
-        $this->createCriterion('silver', [$this->cond('total_invested', '>=', 500)]);
+        $this->createCriterion('silver', [$this->cond('current_eligible_principal', '>=', 500)]);
 
         \Illuminate\Support\Facades\Queue::fake();
         $this->invest($u, 900);
@@ -264,7 +264,7 @@ class RankEvaluationTest extends RankTestCase
         $before = collect($tables)->mapWithKeys(fn ($t) => [$t => DB::table($t)->count()])->all();
         $invBefore = DB::table('investment_accounts')->where('id', $inv->id)->first();
 
-        $this->createCriterion('gold', [$this->cond('total_invested', '>=', 1000)]);
+        $this->createCriterion('gold', [$this->cond('current_eligible_principal', '>=', 1000)]);
         $this->engine()->evaluateUser($u->id);
         $this->assertSame('gold', $this->freshRank($u));
 

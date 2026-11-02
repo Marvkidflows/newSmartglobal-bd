@@ -143,7 +143,7 @@ class FinancialEmailController extends AdminEmailController
         $validated = $request->validate([
             'investor_id' => ['required', 'integer', Rule::exists('users', 'id')->where('role', 'investor')],
             'subject'     => ['required', 'string', 'max:255'],
-            'body_html'   => ['required', 'string'],
+            'body_html'   => ['required', 'string', 'max:1572864'],
             'attachment'  => ['nullable', 'file', 'max:10240'],
         ]);
 
@@ -165,7 +165,7 @@ class FinancialEmailController extends AdminEmailController
 
         $validated = $request->validate([
             'subject'   => ['required', 'string', 'max:255'],
-            'body_html' => ['required', 'string'],
+            'body_html' => ['required', 'string', 'max:1572864'],
         ]);
 
         try {
@@ -254,7 +254,7 @@ class FinancialEmailController extends AdminEmailController
 
         $validated = $request->validate([
             'subject'   => ['required', 'string', 'max:255'],
-            'body_html' => ['required', 'string'],
+            'body_html' => ['required', 'string', 'max:1572864'],
             'filter'    => ['required', 'in:all,active,suspended,frozen,pending_kyc,verified,country,plan'],
             'country'   => ['nullable', 'string', 'required_if:filter,country'],
             'plan_id'   => ['nullable', 'exists:investment_plans,id', 'required_if:filter,plan'],
@@ -345,7 +345,7 @@ class FinancialEmailController extends AdminEmailController
                 'name'      => $t->name,
                 'category'  => $t->category,
                 'subject'   => $t->subject,
-                'body_html' => $t->body_html,
+                'body_html' => $this->displayHtml($t->body_html),
                 'shared'    => $t->department === null,
                 'editable'  => $t->department === self::DEPARTMENT,
                 'updated_at'=> optional($t->updated_at)->toIso8601String(),
@@ -362,7 +362,7 @@ class FinancialEmailController extends AdminEmailController
             'name'      => ['required', 'string', 'max:255'],
             'category'  => ['nullable', 'string', 'max:100'],
             'subject'   => ['required', 'string', 'max:255'],
-            'body_html' => ['required', 'string'],
+            'body_html' => ['required', 'string', 'max:1572864'],
         ]);
 
         $validated['body_html']  = $this->cleanHtml($validated['body_html']);
@@ -382,7 +382,7 @@ class FinancialEmailController extends AdminEmailController
             'name'      => ['sometimes', 'string', 'max:255'],
             'category'  => ['nullable', 'string', 'max:100'],
             'subject'   => ['sometimes', 'string', 'max:255'],
-            'body_html' => ['sometimes', 'string'],
+            'body_html' => ['sometimes', 'string', 'max:1572864'],
         ]);
         if (isset($validated['body_html'])) {
             $validated['body_html'] = $this->cleanHtml($validated['body_html']);
@@ -445,6 +445,7 @@ class FinancialEmailController extends AdminEmailController
         abort_unless($sentEmail->department === self::DEPARTMENT, 404);
 
         $sentEmail->load(['admin:id,name', 'investor:id,name,full_name,email']);
+        $sentEmail->body_html = $this->displayHtml($sentEmail->body_html);       // display-only; the stored row is untouched
         return response()->json(['email' => $sentEmail->makeHidden(['attachment_path'])]);
     }
 
@@ -462,18 +463,23 @@ class FinancialEmailController extends AdminEmailController
     }
 
     /**
-     * Defence-in-depth for HTML that is later rendered on the investor
-     * dashboard: keep basic formatting, drop scripts / frames / inline event
-     * handlers / javascript: URLs. (The Quill editor only ever produces the
-     * allowed tags.)
+     * Sanitise composed email HTML with the shared allow-list sanitiser (email profile) — replaces the former strip_tags + regex
+     * clean-up, which kept every attribute of <a>/<img> and, by reading the patterns, did not neutralise forms such as
+     * <img/src=x/onerror=…>. Applied before the HTML is stored, queued or sent. A body that is empty once unsafe content is
+     * removed is refused (422).
      */
     protected function cleanHtml(string $html): string
     {
-        $allowed = '<p><br><strong><b><em><i><u><s><ul><ol><li><a><h1><h2><h3><h4><span><div><blockquote><img><hr><table><thead><tbody><tr><th><td>';
-        $html    = strip_tags($html, $allowed);
-        $html    = preg_replace('/\son\w+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)/i', '', $html);
-        $html    = preg_replace('/(href|src)\s*=\s*(["\']?)\s*javascript:[^"\'>\s]*\2/i', '$1="#"', $html);
+        $safe = app(\App\Services\RichTextSanitizer::class)->sanitizeEmail($html);
+        if ($safe === '') {
+            throw \Illuminate\Validation\ValidationException::withMessages(['body_html' => ['The email body is empty once unsafe or unsupported content is removed.']]);
+        }
+        return $safe;
+    }
 
-        return $html;
+    /** Sanitise stored HTML for display only (the stored row is never rewritten). */
+    protected function displayHtml(?string $html): string
+    {
+        return ($html === null || trim($html) === '') ? '' : app(\App\Services\RichTextSanitizer::class)->sanitizeEmail($html);
     }
 }

@@ -19,7 +19,7 @@ class InvestorRankCriteriaViewTest extends RankTestCase
     private function activate(string $key, float $amount, int $cycles): void
     {
         $this->createCriterion($key, [
-            $this->cond('total_invested', '>=', $amount),
+            $this->cond('current_eligible_principal', '>=', $amount),
             $this->cond('completed_investment_count', '>=', $cycles),
         ]);
     }
@@ -54,7 +54,7 @@ class InvestorRankCriteriaViewTest extends RankTestCase
 
     public function test_draft_criteria_are_not_presented_as_active(): void
     {
-        $this->createCriterion('gold', [$this->cond('total_invested', '>=', 5000)], ['is_active' => false]);
+        $this->createCriterion('gold', [$this->cond('current_eligible_principal', '>=', 5000)], ['is_active' => false]);
         $gold = collect($this->actingAs($this->investor(), 'sanctum')->getJson(self::URL)->json('ranks'))->firstWhere('key', 'gold');
         $this->assertSame('awaiting_approval', $gold['status']);
         $this->assertNull($gold['min_investment_usd']);

@@ -30,6 +30,8 @@ abstract class RankTestCase extends TestCase
         config(['ranks.require_approval' => false]);
         // Legacy fixtures use arbitrary numbers; the mandatory-core guard has its own suite (RankCoreRequirementsTest) which turns it on.
         config(['ranks.enforce_core_requirements' => false]);
+        // The principal-policy activation gate has its own tests (RankPrincipalPolicyTest); the engine tests switch it off.
+        config(['ranks.require_principal_policy' => false]);
         $this->admin = User::factory()->create(['role' => 'admin', 'status' => 'active']);
         // The REAL default is "no confirmed currency policy", which blocks activating money criteria. The rank tests
         // exercise the engine, so they start with a confirmed policy; RankDecisionsTest and RankCurrencyPolicyTest
@@ -81,12 +83,16 @@ abstract class RankTestCase extends TestCase
      * An investor whose recorded total is exactly $amount across exactly $cycles genuinely
      * completed investments (or, with 0 cycles, one still-active investment of $amount).
      */
+    /**
+     * An investor with $amount of CURRENT eligible principal and $cycles verified completed cycles (Board §1/§3, Financial Team §3D).
+     * Money lives in one ACTIVE verified position; each cycle is a separate, matured, completed, verified $1 position whose principal is
+     * no longer active (so it adds a cycle but no current principal). Nothing here depends on the old cumulative measure.
+     */
     protected function investorWith(float $amount, int $cycles, array $attrs = []): User
     {
         $u = $this->investor($attrs);
-        if ($cycles === 0) { $this->invest($u, $amount); return $u; }
-        for ($i = 1; $i < $cycles; $i++) $this->investCompleted($u, 1.00);
-        $this->investCompleted($u, round($amount - ($cycles - 1), 2));
+        for ($i = 0; $i < $cycles; $i++) $this->investCompleted($u, 1.00);
+        if ($amount > 0) $this->invest($u, $amount);
         return $u;
     }
 

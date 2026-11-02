@@ -162,6 +162,16 @@ class AdminWithdrawalController extends Controller
                     'balance_after'  => $balanceAfter,
                     'reason'         => "Withdrawal #{$locked->id} approved",
                 ]);
+
+                // Financial Team §1B/§2: the completed payout is recorded, and — only now that it is approved and processed — the PRINCIPAL
+                // components classified for it reduce their positions. Pending/rejected/on-hold withdrawals never reach this point. A profit
+                // component reduces nothing. A duplicate deduction aborts the whole approval.
+                app(\App\Services\Ledger\WalletLedger::class)->record([
+                    'entry_key' => "withdrawal:{$locked->id}:payout", 'user_id' => $user->id, 'classification' => 'completed_payout', 'direction' => 'debit',
+                    'amount' => $locked->amount, 'withdrawal_id' => $locked->id, 'balance_after' => $balanceAfter, 'actor_id' => $request->user()->id,
+                    'actor_name' => $request->user()->name ?? 'Staff', 'note' => 'Withdrawal approved and processed',
+                ]);
+                app(\App\Services\Ledger\PrincipalService::class)->applyWithdrawal($locked, $request->user());
             }
 
             return ['ok' => true, 'user' => $user, 'amount' => (float) $locked->amount];

@@ -112,7 +112,7 @@ class RankStandingController extends Controller
             }
 
             fputcsv($out, ['Account ID', 'Name', 'Email', 'Assigned rank', 'Rank status', 'Rank changed', 'Calculated eligible rank', 'Pending review for',
-                'Verified total invested (USD)', 'Completed cycles', 'Qualified referrals', 'Active investment (USD)', 'Approved deposits (USD)',
+                'Current eligible principal (USD, verified)', 'Completed cycles', 'Qualified referrals', 'Active investment (USD)', 'Approved deposits (USD)',
                 'Qualifying investments', 'Longest duration (days)', 'Unmet requirements for next rank']);
 
             $q = User::query()->where('role', 'investor')->with('investorRank')->orderBy('id');
@@ -129,7 +129,7 @@ class RankStandingController extends Controller
                     fputcsv($out, array_map([$this, 'safe'], [
                         $row['account_id'], $row['name'], $row['email'], $row['assigned_rank']['name'] ?? 'Unranked', $row['rank_status'],
                         null, $row['calculated_rank']['name'] ?? 'None', $row['pending_review']['proposed_rank']['name'] ?? '',
-                        $row['core_values']['verified_total_invested_usd'], $row['core_values']['completed_cycles'],
+                        $row['core_values']['current_eligible_principal_usd'], $row['core_values']['completed_cycles'],
                         $a['qualified_referrals']['value'] ?? 0, $a['active_investment_usd']['value'] ?? 0, $a['approved_deposits_usd']['value'] ?? 0,
                         $a['qualifying_investments']['value'] ?? 0, $a['longest_duration_days']['value'] ?? 0,
                         $next ? implode(' | ', $next['unmet']) : '',

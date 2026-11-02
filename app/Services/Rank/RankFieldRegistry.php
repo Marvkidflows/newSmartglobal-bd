@@ -59,7 +59,7 @@ class RankFieldRegistry
         if (!in_array($definition['type'], [self::NUMBER, self::INTEGER, self::BOOLEAN, self::ENUM], true)) {
             throw new \InvalidArgumentException("Rank field [$key] has unsupported type.");
         }
-        $this->fields[$key] = $definition + ['unit' => null, 'options' => [], 'default' => null, 'description' => null, 'monetary' => false];
+        $this->fields[$key] = $definition + ['unit' => null, 'options' => [], 'default' => null, 'description' => null, 'monetary' => false, 'rank_rule' => true];
     }
 
     /** Does this field measure a MONEY amount (and so depend on the currency being confirmed)? */
@@ -98,6 +98,7 @@ class RankFieldRegistry
     {
         $fields = [];
         foreach ($this->fields as $key => $def) {
+            if (!($def['rank_rule'] ?? true)) continue;      // reporting-only fields are not offered in the rule builder
             $fields[] = [
                 'key'         => $key,
                 'label'       => $def['label'],
@@ -155,24 +156,39 @@ class RankFieldRegistry
         $cur = config('ranks.ranking_currency', 'USD');
         $ledger = fn () => app(RankInvestmentLedger::class);
 
-        $this->register('total_invested', [
-            'label'       => 'Total invested amount (verified ' . $cur . ')',
+        // THE monetary rank measure (Board decision §1, Financial Team §3D): current verified eligible principal in qualifying ACTIVE positions.
+        $this->register('current_eligible_principal', [
+            'label'       => 'Current eligible principal (verified)',
             'type'        => self::NUMBER,
             'unit'        => $cur,
             'monetary'    => true,
             'default'     => 0.0,
-            'description' => 'Cumulative total of the investor\'s non-cancelled investments (active + completed), in ' . $cur
-                . '. Only investments with a verified ' . $cur . ' value count; unverified or stale ones add nothing and are flagged for review. Duplicate records are excluded.',
+            'description' => 'Verified ' . $cur . ' principal that is CURRENTLY invested in qualifying active positions, after any completed principal redemptions. '
+                . 'Completed, redeemed or paid-out principal no longer counts (its verified completed cycle still does). Wallet cash never counts. '
+                . 'Unverified, stale, cancelled, duplicate, disputed, reversed, under-review and unresolved-currency records add nothing and are flagged for review.',
+            'resolver'    => fn (array $ids) => collect($ledger()->forUsers($ids))->map(fn ($f) => $f['current_principal'])->all(),
+        ]);
+
+        // REPORTING ONLY from here: these can be shown, but never take part in a rank rule (see rank_rule => false).
+        $this->register('total_invested', [
+            'label'       => 'Historical total invested (verified ' . $cur . ') — reporting only',
+            'type'        => self::NUMBER,
+            'unit'        => $cur,
+            'monetary'    => true,
+            'default'     => 0.0,
+            'rank_rule'   => false,
+            'description' => 'Cumulative verified total of every non-cancelled investment ever made (active + completed). Kept for history and reporting; it does NOT determine rank, because capital that has been withdrawn or redeemed no longer counts.',
             'resolver'    => fn (array $ids) => collect($ledger()->forUsers($ids))->map(fn ($f) => $f['total_usd'])->all(),
         ]);
 
         $this->register('active_investment_amount', [
-            'label'       => 'Currently active investment amount (verified ' . $cur . ')',
+            'label'       => 'Verified value of active investments (' . $cur . ') — reporting only',
             'type'        => self::NUMBER,
             'unit'        => $cur,
             'monetary'    => true,
             'default'     => 0.0,
-            'description' => 'Verified-' . $cur . ' total of investments with status "active". Unverified, stale, cancelled and duplicate records are not counted.',
+            'rank_rule'   => false,
+            'description' => 'Verified-' . $cur . ' value of investments with status "active", before principal redemptions. Superseded for ranking by "Current eligible principal (verified)".',
             'resolver'    => fn (array $ids) => collect($ledger()->forUsers($ids))->map(fn ($f) => $f['active_usd'])->all(),
         ]);
 
@@ -182,7 +198,8 @@ class RankFieldRegistry
             'unit'        => $cur,
             'monetary'    => true,
             'default'     => 0.0,
-            'description' => 'Verified-' . $cur . ' total of approved deposits. Deposits without a verified ' . $cur . ' value add nothing and are flagged for review.',
+            'rank_rule'   => false,
+            'description' => 'Verified-' . $cur . ' total of approved deposits — a separate REPORTING metric. It never determines rank (deposits may not be invested or may later be withdrawn). Deposits without a verified ' . $cur . ' value add nothing and are flagged for review.',
             'resolver'    => fn (array $ids) => collect($ledger()->depositsForUsers($ids))->map(fn ($f) => $f['total_usd'])->all(),
         ]);
 

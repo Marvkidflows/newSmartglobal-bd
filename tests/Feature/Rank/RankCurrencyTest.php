@@ -78,7 +78,7 @@ class RankCurrencyTest extends RankTestCase
     {
         $this->assertSame('USD', config('ranks.ranking_currency'));
         $fields = collect($this->actingAs($this->admin, 'sanctum')->getJson('/api/admin/ranks/criteria/schema')->json('fields'))->keyBy('key');
-        $this->assertSame('USD', $fields['total_invested']['unit']);
+        $this->assertSame('USD', $fields['current_eligible_principal']['unit']);
     }
 
     public function test_a_stored_amount_is_never_assumed_to_be_usd(): void
@@ -86,7 +86,7 @@ class RankCurrencyTest extends RankTestCase
         $u = $this->investor();
         $inv = $this->invest($u, 5000, 30, 'active', false);          // the amount is on record, but nobody verified its currency
 
-        $this->assertEquals(0.0, $this->field($u, 'total_invested'));
+        $this->assertEquals(0.0, $this->field($u, 'current_eligible_principal'));
         $this->assertContains($inv->id, $this->facts($u)['unverified']);
     }
 
@@ -95,7 +95,7 @@ class RankCurrencyTest extends RankTestCase
         $u = $this->investor();
         $this->invest($u, 1234.56);                                     // fixture verifies it as USD
 
-        $this->assertEquals(1234.56, $this->field($u, 'total_invested'));
+        $this->assertEquals(1234.56, $this->field($u, 'current_eligible_principal'));
         $this->assertSame([], $this->facts($u)['unverified']);
     }
 
@@ -113,7 +113,7 @@ class RankCurrencyTest extends RankTestCase
         $this->assertSame('Central bank mid-rate', $v->rate_source);
 
         $this->assertEquals(1_000_000.00, (float) $inv->fresh()->amount); // the investment itself is untouched
-        $this->assertEquals(650.00, $this->field($u, 'total_invested')); // ranking uses the USD value
+        $this->assertEquals(650.00, $this->field($u, 'current_eligible_principal')); // ranking uses the USD value
     }
 
     public function test_a_non_usd_amount_without_a_recorded_rate_is_refused_and_stays_flagged(): void
@@ -126,7 +126,7 @@ class RankCurrencyTest extends RankTestCase
 
         $this->assertSame(0, UsdValuation::count());
         $this->assertContains($inv->id, $this->facts($u)['unverified']);
-        $this->assertEquals(0.0, $this->field($u, 'total_invested'));
+        $this->assertEquals(0.0, $this->field($u, 'current_eligible_principal'));
     }
 
     public function test_the_rate_must_be_positive_attributed_dated_and_not_in_the_future(): void
@@ -146,7 +146,7 @@ class RankCurrencyTest extends RankTestCase
         $this->assertSame(0, UsdValuation::count());
 
         $this->postJson($this->verifyUrl($inv), $base)->assertCreated();
-        $this->assertEquals(1080.00, $this->field($u, 'total_invested'));
+        $this->assertEquals(1080.00, $this->field($u, 'current_eligible_principal'));
     }
 
     public function test_a_stablecoin_or_other_non_usd_code_is_not_treated_as_usd_without_a_rate(): void
@@ -156,7 +156,7 @@ class RankCurrencyTest extends RankTestCase
 
         $this->actingAs($this->financial(), 'sanctum')->postJson($this->verifyUrl($inv), ['currency' => 'USDT', 'note' => 'Paid in USDT'])
             ->assertStatus(422)->assertJsonValidationErrors('rate');
-        $this->assertEquals(0.0, $this->field($u, 'total_invested'));
+        $this->assertEquals(0.0, $this->field($u, 'current_eligible_principal'));
     }
 
     public function test_the_client_cannot_supply_the_usd_figure(): void
@@ -174,16 +174,16 @@ class RankCurrencyTest extends RankTestCase
     {
         $u = $this->investor();
         $inv = $this->invest($u, 600);
-        $this->assertEquals(600.0, $this->field($u, 'total_invested'));
+        $this->assertEquals(600.0, $this->field($u, 'current_eligible_principal'));
 
         $inv->update(['amount' => 700]);                                // e.g. the audited Financial correction
 
         $this->assertContains($inv->id, $this->facts($u)['stale']);
-        $this->assertEquals(0.0, $this->field($u, 'total_invested'));   // not silently trusted at the old or new value
+        $this->assertEquals(0.0, $this->field($u, 'current_eligible_principal'));   // not silently trusted at the old or new value
 
         $this->verifyUsd($inv->fresh());                                // re-verified at the corrected amount
         $this->assertSame([], $this->facts($u)['stale']);
-        $this->assertEquals(700.0, $this->field($u, 'total_invested'));
+        $this->assertEquals(700.0, $this->field($u, 'current_eligible_principal'));
     }
 
     public function test_re_verifying_never_double_counts_an_investment(): void
@@ -194,7 +194,7 @@ class RankCurrencyTest extends RankTestCase
         $this->verifyUsd($inv);                                                  // corrected: it was USD → 500
 
         $this->assertSame(2, UsdValuation::where('valuable_id', $inv->id)->count());
-        $this->assertEquals(500.0, $this->field($u, 'total_invested'));          // newest only, counted once
+        $this->assertEquals(500.0, $this->field($u, 'current_eligible_principal'));          // newest only, counted once
         $this->assertSame(1, $this->facts($u)['count']);
     }
 
@@ -231,7 +231,7 @@ class RankCurrencyTest extends RankTestCase
     public function test_only_approved_deposits_are_valued_and_unverified_ones_add_nothing(): void
     {
         $u = $this->investor();
-        $ok  = Deposit::create(['user_id' => $u->id, 'amount' => 300, 'payment_method' => 'usdt', 'status' => 'approved']);
+        $ok  = Deposit::create(['user_id' => $u->id, 'amount' => 300, 'payment_method' => 'bank_transfer', 'status' => 'approved']);
         $new = Deposit::create(['user_id' => $u->id, 'amount' => 50,  'payment_method' => 'bank_transfer', 'status' => 'approved']);
         $pending = Deposit::create(['user_id' => $u->id, 'amount' => 900, 'payment_method' => 'bitcoin', 'status' => 'pending']);
         $this->actingAs($this->financial(), 'sanctum');
@@ -247,25 +247,41 @@ class RankCurrencyTest extends RankTestCase
 
     public function test_unverified_money_never_grants_a_rank_even_when_the_gate_is_open(): void
     {
-        $this->createCriterion('bronze', [$this->cond('total_invested', '>=', 100), $this->cond('completed_investment_count', '>=', 1)]);
+        $this->createCriterion('bronze', [$this->cond('current_eligible_principal', '>=', 100), $this->cond('completed_investment_count', '>=', 1)]);
         $u = $this->investor();
-        $inv = $this->age($this->invest($u, 5000, 30, 'completed', false));   // a genuinely completed cycle, currency unverified
+        $inv    = $this->age($this->invest($u, 5000, 30, 'completed', false));   // a genuinely completed cycle, currency unverified
+        $active = $this->invest($u, 5000, 30, 'active', false);                  // the current principal, currency unverified
 
         $this->engine()->evaluateUser($u->id);
         $this->assertNull($this->freshRank($u));
 
-        $this->verifyUsd($inv);
+        $this->verifyUsd($inv);                                                  // the cycle is verified, but the principal is still unverified money
+        $this->engine()->evaluateUser($u->id);
+        $this->assertNull($this->freshRank($u), 'unverified principal must not grant a rank even when the cycle is verified');
+
+        $this->verifyUsd($active);
         $this->engine()->evaluateUser($u->id);
         $this->assertSame('bronze', $this->freshRank($u));
     }
 
-    public function test_criteria_that_do_not_measure_money_are_not_blocked_by_missing_valuations(): void
+    public function test_a_completed_cycle_counts_only_once_its_currency_is_verified_even_for_a_cycles_only_criterion(): void
     {
+        // Framework §2: "only verified, eligible investments may count" and "only cycles confirmed as completed by the financial
+        // system". A cycles-only criterion therefore also waits for verification. (This replaces the earlier expectation that
+        // unverified cycles counted: that behaviour was not supported by the official framework.)
         $this->createCriterion('silver', [$this->cond('completed_investment_count', '>=', 2)]);
         $u = $this->investor();
-        $this->age($this->invest($u, 10, 30, 'completed', false));
-        $this->age($this->invest($u, 10, 30, 'completed', false));
+        $a = $this->age($this->invest($u, 10, 30, 'completed', false));
+        $b = $this->age($this->invest($u, 10, 30, 'completed', false));
 
+        $this->engine()->evaluateUser($u->id);
+        $this->assertNull($this->freshRank($u), 'two completed but UNVERIFIED cycles must not grant a rank');
+
+        $this->verifyUsd($a);
+        $this->engine()->evaluateUser($u->id);
+        $this->assertNull($this->freshRank($u), 'one verified cycle is still below the requirement of two');
+
+        $this->verifyUsd($b);
         $this->engine()->evaluateUser($u->id);
         $this->assertSame('silver', $this->freshRank($u));
     }
@@ -290,7 +306,7 @@ class RankCurrencyTest extends RankTestCase
         $this->invest($this->investor(), 500, 30, 'active', false);
 
         $res = $this->actingAs($this->admin, 'sanctum')->postJson('/api/admin/ranks/criteria/validate',
-            $this->payload('bronze', [$this->cond('total_invested', '>=', 100)], ['is_active' => false]))->assertOk();
+            $this->payload('bronze', [$this->cond('current_eligible_principal', '>=', 100)], ['is_active' => false]))->assertOk();
 
         $this->assertStringContainsString('verified USD', implode(' ', $res->json('warnings')));
     }
@@ -371,7 +387,7 @@ class RankCurrencyTest extends RankTestCase
 
         $this->assertSame(1, $res->json('verified'));
         $this->assertCount(3, $res->json('skipped'));
-        $this->assertEquals(300.0, $this->field($u, 'total_invested'));          // 100 + 200; cancelled never counts
+        $this->assertEquals(300.0, $this->field($u, 'current_eligible_principal'));          // 100 + 200; cancelled never counts
         $this->assertSame('Financial team confirms these are USD', UsdValuation::where('valuable_id', $todo->id)->sole()->note);
     }
 
@@ -416,8 +432,14 @@ class RankCurrencyTest extends RankTestCase
 
         $this->assertSame(1, $this->field($u, 'investment_count'));
         $this->assertSame(1, $this->field($u, 'completed_investment_count'));
-        $this->assertEquals(750.0, $this->field($u, 'total_invested'));
+        $this->assertEquals(750.0, $this->field($u, 'total_invested'));                 // historical total: counted once
+        $this->assertEquals(0.0, $this->field($u, 'current_eligible_principal'));      // completed → no longer an active position
         $this->assertEquals(0.0, $this->field($u, 'active_investment_amount'));
+
+        $this->invest($u, 250, 30, 'active');                                           // a running position adds current principal once
+        $this->assertEquals(1000.0, $this->field($u, 'total_invested'));
+        $this->assertEquals(250.0, $this->field($u, 'current_eligible_principal'));
+        $this->assertEquals(250.0, $this->field($u, 'active_investment_amount'));
     }
 
     // ── Duplicate records ───────────────────────────────────────────────────────────

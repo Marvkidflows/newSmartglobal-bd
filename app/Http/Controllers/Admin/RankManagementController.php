@@ -173,8 +173,10 @@ class RankManagementController extends Controller
                 'duplicate_suspects'     => $facts['duplicates'],
                 'deposits_unverified'    => $depositFacts['unverified'],
                 'deposits_stale'         => $depositFacts['stale'],
-                'verified_total_usd'     => $facts['total_usd'],
+                'current_eligible_principal' => $facts['current_principal'],
+                'verified_total_usd'     => $facts['total_usd'],   // historical total, reporting only
                 'completed_cycles'       => $facts['cycles'],
+                'cycles_awaiting_verification' => $facts['cycles_awaiting_verification'],
                 'ranking_currency'       => config('ranks.ranking_currency'),
                 'by_currency'            => $facts['by_currency'],
                 // How this investor's APPROVED deposits were actually paid (pending / held / rejected are not shown or counted).

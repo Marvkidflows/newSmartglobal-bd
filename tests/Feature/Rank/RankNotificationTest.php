@@ -17,7 +17,7 @@ class RankNotificationTest extends RankTestCase
     {
         $u = $this->investor(['name' => 'Ada Investor']);
         $this->invest($u, 4321.99);
-        $this->createCriterion('silver', [$this->cond('total_invested', '>=', 500)]);
+        $this->createCriterion('silver', [$this->cond('current_eligible_principal', '>=', 500)]);
         app(RankEvaluationService::class)->evaluateUser($u->id);
         return [$u, InvestorRankChange::where('investor_id', $u->id)->sole()];
     }
@@ -26,7 +26,7 @@ class RankNotificationTest extends RankTestCase
     {
         Queue::fake();
         $u = $this->investor(); $this->invest($u, 900);
-        $this->createCriterion('silver', [$this->cond('total_invested', '>=', 500)]);
+        $this->createCriterion('silver', [$this->cond('current_eligible_principal', '>=', 500)]);
         app(RankEvaluationService::class)->evaluateUser($u->id);
 
         $change = InvestorRankChange::where('investor_id', $u->id)->sole();
@@ -100,7 +100,7 @@ class RankNotificationTest extends RankTestCase
 
     public function test_delivery_failure_does_not_reverse_the_upgrade_and_is_visible_and_retryable(): void
     {
-        $this->createCriterion('silver', [$this->cond('total_invested', '>=', 500)]);
+        $this->createCriterion('silver', [$this->cond('current_eligible_principal', '>=', 500)]);
         User::where('role', 'admin')->update(['status' => 'suspended']);     // nobody can be notified…
         $u = $this->investor(); $this->invest($u, 900);                       // …when the investor is upgraded
         $change = InvestorRankChange::where('investor_id', $u->id)->sole();
@@ -132,9 +132,9 @@ class RankNotificationTest extends RankTestCase
     public function test_review_alert_is_sent_once_per_unchanged_shortfall(): void
     {
         $u = $this->investor(); $this->invest($u, 2000);
-        $gold = $this->createCriterion('gold', [$this->cond('total_invested', '>=', 1000)])['criterion']['id'];
+        $gold = $this->createCriterion('gold', [$this->cond('current_eligible_principal', '>=', 1000)])['criterion']['id'];
         app(RankEvaluationService::class)->evaluateUser($u->id);
-        $this->actingAs($this->admin, 'sanctum')->putJson("/api/admin/ranks/criteria/{$gold}", ['name' => 'Gold', 'logic' => 'all', 'conditions' => [$this->cond('total_invested', '>=', 9000)]]);
+        $this->actingAs($this->admin, 'sanctum')->putJson("/api/admin/ranks/criteria/{$gold}", ['name' => 'Gold', 'logic' => 'all', 'conditions' => [$this->cond('current_eligible_principal', '>=', 9000)]]);
 
         for ($i = 0; $i < 3; $i++) app(RankEvaluationService::class)->evaluateUser($u->id);
         $review = \App\Models\RankDowngradeReview::sole();

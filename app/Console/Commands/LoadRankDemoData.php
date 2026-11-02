@@ -34,34 +34,45 @@ class LoadRankDemoData extends Command
 
     /**
      * name => [expected rank key|null, why, [[currency, amount, fixture rate, status], ...]]
-     * Thresholds (USD, completed cycles): Bronze 100/1, Silver 1,000/2, Gold 5,000/3, Platinum 10,000/5, Diamond 20,000/8, Elite 50,000/12.
+     *
+     * Two independent measures (Board §1):
+     *   • CURRENT ELIGIBLE PRINCIPAL = verified USD principal in ACTIVE positions only (completed = $0).
+     *   • COMPLETED CYCLES           = genuinely completed, verified investments (their history still counts after the principal has left).
+     * Thresholds (USD principal / cycles): Bronze 100/1, Silver 1,000/2, Gold 5,000/3, Platinum 10,000/5, Diamond 20,000/8, Elite 50,000/12.
+     * An 'active' line below is genuine current principal; a 'completed' line is history only. Nothing here is padded to force a result.
      */
     public static function scenarios(): array
     {
-        $rep = fn (int $n, string $cur, float $amt, ?float $rate) => array_fill(0, $n, [$cur, $amt, $rate, 'completed']);
+        $done = fn (int $n, string $cur, float $amt, ?float $rate) => array_fill(0, $n, [$cur, $amt, $rate, 'completed']);
 
         return [
+            'History only: 12 cycles, no current principal' => [null,
+                '12 completed USD 5,500 cycles meet every cycle minimum, but nothing is currently invested: current eligible principal is $0 → no rank (completed principal never counts)',
+                $done(12, 'USD', 5500, null)],
+            'Principal only: $60,000 active, no completed cycle' => [null,
+                'USD 60,000 is currently invested and verified, but there is no completed cycle yet → no rank (amount never replaces cycles)',
+                [['USD', 60000, null, 'active']]],
             'NGN raw amount is large, USD value is Silver' => ['silver',
-                '3 × NGN 2,000,000 @ 0.00065 = $3,900 (raw 6,000,000 must NOT be compared with USD thresholds); 3 cycles → Silver, not Gold (needs $5,000)',
-                $rep(3, 'NGN', 2000000, 0.00065)],
+                'History: 3 completed cycles. Current principal: NGN 2,000,000 @ 0.00065 = $1,300 (raw NGN is never compared with USD thresholds) → Silver; Gold needs $5,000',
+                array_merge($done(3, 'NGN', 2000000, 0.00065), [['NGN', 2000000, 0.00065, 'active']])],
             'GBP exact Gold boundary' => ['gold',
-                'GBP 2,000 + 1,000 + 1,000 @ 1.25 = exactly $5,000; 3 cycles → Gold',
-                [['GBP', 2000, 1.25, 'completed'], ['GBP', 1000, 1.25, 'completed'], ['GBP', 1000, 1.25, 'completed']]],
-            'EUR just below Gold' => ['silver',
-                '3 × EUR 1,533.33 @ 1.08 = $4,967.99 (< $5,000); 3 cycles → Silver',
-                $rep(3, 'EUR', 1533.33, 1.08)],
+                'History: 3 completed GBP 1,000 cycles. Current principal: GBP 4,000 @ 1.25 = exactly $5,000 → Gold',
+                array_merge($done(3, 'GBP', 1000, 1.25), [['GBP', 4000, 1.25, 'active']])],
+            'GBP just below Gold' => ['silver',
+                'History: 3 completed cycles. Current principal: GBP 3,999.99 @ 1.25 = 4,999.9875 → $4,999.99 posted half-up, below $5,000 → Silver, not Gold',
+                array_merge($done(3, 'GBP', 1000, 1.25), [['GBP', 3999.99, 1.25, 'active']])],
             'JPY smallest qualifying Bronze' => ['bronze',
-                '1 × JPY 15,000 @ 0.0067 = $100.50 (≥ $100); 1 cycle → Bronze',
-                [['JPY', 15000, 0.0067, 'completed']]],
+                'History: 1 completed cycle. Current principal: JPY 15,000 @ 0.0067 = $100.50 (≥ $100) → Bronze',
+                [['JPY', 15000, 0.0067, 'completed'], ['JPY', 15000, 0.0067, 'active']]],
             'Diamond but not Elite (11 cycles)' => ['diamond',
-                '11 × USD 5,500 = $60,500 (≥ $50,000) but only 11 cycles (Elite needs 12) → Diamond',
-                $rep(11, 'USD', 5500, null)],
+                'History: 11 completed USD 5,500 cycles (their principal is no longer counted). Current principal: USD 25,000 active → Diamond; Elite needs 12 cycles',
+                array_merge($done(11, 'USD', 5500, null), [['USD', 25000, null, 'active']])],
             'Unverified currency counts as zero' => [null,
-                '12 completed cycles of 100,000 with NO verified currency: counts as $0 until a person verifies it → no rank',
+                '12 completed cycles of 100,000 with NO verified currency: unverified records add no cycle and no principal until a person verifies them → no rank',
                 array_fill(0, 12, [null, 100000, null, 'completed'])],
             'Elite from mixed currencies' => ['elite',
-                '4 × USD 5,000 + 4 × EUR 4,000 @ 1.10 + 4 × GHS 50,000 @ 0.07 = $51,600; 12 cycles → Elite',
-                array_merge($rep(4, 'USD', 5000, null), $rep(4, 'EUR', 4000, 1.10), $rep(4, 'GHS', 50000, 0.07))],
+                'History: 12 completed cycles (4 × USD, 4 × EUR @ 1.10, 4 × GHS @ 0.07). Current principal: USD 50,000 active → Elite',
+                array_merge($done(4, 'USD', 5000, null), $done(4, 'EUR', 4000, 1.10), $done(4, 'GHS', 50000, 0.07), [['USD', 50000, null, 'active']])],
         ];
     }
 
@@ -114,7 +125,9 @@ class LoadRankDemoData extends Command
                         $inv = InvestmentAccount::create([
                             'user_id' => $user->id, 'investment_plan_id' => $planId, 'amount' => $amount, 'profit_percentage' => 0,
                             'expected_profit' => 0, 'status' => $status,
-                            'start_date' => now()->subDays(60 + $i)->toDateString(), 'end_date' => now()->subDays(25 + $i)->toDateString(),
+                            // A completed cycle is in the past; an ACTIVE position is genuinely running (not an expired one).
+                            'start_date' => ($status === 'active' ? now()->subDays(5) : now()->subDays(60 + $i))->toDateString(),
+                            'end_date'   => ($status === 'active' ? now()->addDays(25) : now()->subDays(25 + $i))->toDateString(),
                         ]);
                         if ($cur === null) continue;      // deliberately left unverified
 

@@ -38,7 +38,7 @@ class RankCoreRequirementsTest extends RankTestCase
     {
         foreach (self::CORE as $key => [$amount, $cycles]) {
             $this->createCriterion($key, [
-                $this->cond('total_invested', '>=', $amount),
+                $this->cond('current_eligible_principal', '>=', $amount),
                 $this->cond('completed_investment_count', '>=', $cycles),
             ]);
         }
@@ -128,17 +128,17 @@ class RankCoreRequirementsTest extends RankTestCase
 
         $bad = [
             'bronze cycles >= 0 only (the live defect)'   => ['bronze', [$this->cond('completed_investment_count', '>=', 0)]],
-            'bronze amount and cycles >= 0'               => ['bronze', [$this->cond('total_invested', '>=', 100), $this->cond('completed_investment_count', '>=', 0)]],
-            'bronze amount only'                          => ['bronze', [$this->cond('total_invested', '>=', 100)]],
+            'bronze amount and cycles >= 0'               => ['bronze', [$this->cond('current_eligible_principal', '>=', 100), $this->cond('completed_investment_count', '>=', 0)]],
+            'bronze amount only'                          => ['bronze', [$this->cond('current_eligible_principal', '>=', 100)]],
             'bronze cycles only'                          => ['bronze', [$this->cond('completed_investment_count', '>=', 1)]],
-            'gold with 6 cycles instead of 3'             => ['gold', [$this->cond('total_invested', '>=', 5000), $this->cond('completed_investment_count', '>=', 6)]],
-            'gold with 2 cycles'                          => ['gold', [$this->cond('total_invested', '>=', 5000), $this->cond('completed_investment_count', '>=', 2)]],
-            'diamond with 15 cycles instead of 8'         => ['diamond', [$this->cond('total_invested', '>=', 20000), $this->cond('completed_investment_count', '>=', 15)]],
+            'gold with 6 cycles instead of 3'             => ['gold', [$this->cond('current_eligible_principal', '>=', 5000), $this->cond('completed_investment_count', '>=', 6)]],
+            'gold with 2 cycles'                          => ['gold', [$this->cond('current_eligible_principal', '>=', 5000), $this->cond('completed_investment_count', '>=', 2)]],
+            'diamond with 15 cycles instead of 8'         => ['diamond', [$this->cond('current_eligible_principal', '>=', 20000), $this->cond('completed_investment_count', '>=', 15)]],
             'platinum referrals only'                     => ['platinum', [$this->cond('referral_count', '>=', 7)]],
             'elite referrals only'                        => ['elite', [$this->cond('referral_count', '>=', 23)]],
-            'silver amount too low'                       => ['silver', [$this->cond('total_invested', '>=', 500), $this->cond('completed_investment_count', '>=', 2)]],
-            'elite amount too high'                       => ['elite', [$this->cond('total_invested', '>=', 60000), $this->cond('completed_investment_count', '>=', 12)]],
-            'extra non-core condition added'              => ['bronze', [$this->cond('total_invested', '>=', 100), $this->cond('completed_investment_count', '>=', 1), $this->cond('referral_count', '>=', 1)]],
+            'silver amount too low'                       => ['silver', [$this->cond('current_eligible_principal', '>=', 500), $this->cond('completed_investment_count', '>=', 2)]],
+            'elite amount too high'                       => ['elite', [$this->cond('current_eligible_principal', '>=', 60000), $this->cond('completed_investment_count', '>=', 12)]],
+            'extra non-core condition added'              => ['bronze', [$this->cond('current_eligible_principal', '>=', 100), $this->cond('completed_investment_count', '>=', 1), $this->cond('referral_count', '>=', 1)]],
         ];
 
         foreach ($bad as $label => [$rank, $conds]) {
@@ -149,7 +149,7 @@ class RankCoreRequirementsTest extends RankTestCase
 
         // "any one of" cannot replace "both"
         $any = $this->postJson('/api/admin/ranks/criteria', $this->payload('bronze', [
-            $this->cond('total_invested', '>=', 100), $this->cond('completed_investment_count', '>=', 1),
+            $this->cond('current_eligible_principal', '>=', 100), $this->cond('completed_investment_count', '>=', 1),
         ], ['logic' => 'any']));
         $any->assertStatus(422);
         $this->assertSame(0, RankCriterion::count());
@@ -172,11 +172,11 @@ class RankCoreRequirementsTest extends RankTestCase
         $this->actingAs($this->admin, 'sanctum');
 
         $this->postJson('/api/admin/ranks/criteria', $this->payload('bronze', [
-            $this->cond('total_invested', 'between', [100, 1999]), $this->cond('completed_investment_count', '>=', 1),
+            $this->cond('current_eligible_principal', 'between', [100, 1999]), $this->cond('completed_investment_count', '>=', 1),
         ]))->assertStatus(422);
 
         $this->postJson('/api/admin/ranks/criteria', $this->payload('bronze', [
-            $this->cond('total_invested', 'between', [100, 999]), $this->cond('completed_investment_count', '>=', 1),
+            $this->cond('current_eligible_principal', 'between', [100, 999]), $this->cond('completed_investment_count', '>=', 1),
         ]))->assertCreated();
     }
 
@@ -186,10 +186,10 @@ class RankCoreRequirementsTest extends RankTestCase
     {
         // Reproduce the live dashboard: rows already stored in the database, written without going through validation.
         $this->storeActiveRule('bronze',   [['completed_investment_count', '>=', 0]]);
-        $this->storeActiveRule('silver',   [['total_invested', '>=', 1000], ['completed_investment_count', '>=', 2]]);
-        $this->storeActiveRule('gold',     [['total_invested', '>=', 5000], ['completed_investment_count', '>=', 6]]);
+        $this->storeActiveRule('silver',   [['current_eligible_principal', '>=', 1000], ['completed_investment_count', '>=', 2]]);
+        $this->storeActiveRule('gold',     [['current_eligible_principal', '>=', 5000], ['completed_investment_count', '>=', 6]]);
         $this->storeActiveRule('platinum', [['referral_count', '>=', 7]]);
-        $this->storeActiveRule('diamond',  [['total_invested', '>=', 20000], ['completed_investment_count', '>=', 15]]);
+        $this->storeActiveRule('diamond',  [['current_eligible_principal', '>=', 20000], ['completed_investment_count', '>=', 15]]);
         $this->storeActiveRule('elite',    [['referral_count', '>=', 23]]);
 
         $engine = app(RankEvaluationService::class);
@@ -239,13 +239,13 @@ class RankCoreRequirementsTest extends RankTestCase
         $this->actingAs($this->admin, 'sanctum');
 
         $this->postJson('/api/admin/ranks/criteria', $this->payload('bronze', [
-            $this->cond('total_invested', '>=', 100), $this->cond('completed_investment_count', '>=', 1),
+            $this->cond('current_eligible_principal', '>=', 100), $this->cond('completed_investment_count', '>=', 1),
         ]))->assertStatus(422);
         $this->assertSame(0, RankCriterion::where('is_active', true)->count());
 
         // a perfectly conforming rule saved as a draft is inert while the policy is unconfirmed
         $d = $this->postJson('/api/admin/ranks/criteria', $this->payload('bronze', [
-            $this->cond('total_invested', '>=', 100), $this->cond('completed_investment_count', '>=', 1),
+            $this->cond('current_eligible_principal', '>=', 100), $this->cond('completed_investment_count', '>=', 1),
         ], ['is_active' => false]));
         $d->assertCreated();
         $this->postJson('/api/admin/ranks/criteria/' . $d->json('criterion.id') . '/activate')->assertStatus(422);

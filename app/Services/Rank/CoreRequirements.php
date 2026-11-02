@@ -15,7 +15,7 @@ use App\Models\RankCriterion;
 
 class CoreRequirements
 {
-    public const AMOUNT_FIELD = 'total_invested';
+    public const AMOUNT_FIELD = 'current_eligible_principal';   // Board §1: current verified eligible principal, NOT lifetime investment
     public const CYCLES_FIELD = 'completed_investment_count';
 
     public function enabled(): bool

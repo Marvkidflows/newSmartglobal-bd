@@ -39,6 +39,7 @@ class UsdValuationService
         User $actor,
         bool $confirmDistinct = false,
         bool $acknowledgeRateWarnings = false,
+        ?string $conversionMethod = null,
     ): UsdValuation {
         $type     = strtolower(trim($type));
         $currency = strtoupper(trim($currency));
@@ -60,6 +61,16 @@ class UsdValuationService
         }
 
         if ($errors) throw ValidationException::withMessages($errors);
+
+        // Cryptocurrency stays disabled for rank eligibility until separately approved (Financial Team §4E).
+        $fxc = app(FxControlService::class);
+        if ($fxc->cryptoValuationBlocked()) {
+            $dep = $type === 'deposit' ? Deposit::find($recordId) : (($inv = InvestmentAccount::find($recordId)) && $inv->source_deposit_id ? Deposit::find($inv->source_deposit_id) : null);
+            if ($dep && $fxc->isCryptoDeposit($dep)) {
+                $fxc->openItem('deposit', (int) $dep->id, 'crypto_unapproved', 'Cryptocurrency deposit: valuation for rank eligibility is not approved.');
+                throw ValidationException::withMessages(['record' => ['Cryptocurrency valuation is disabled for rank eligibility until it is separately approved. The record stays unverified and is in the reconciliation queue.']]);
+            }
+        }
 
         $valuation = DB::transaction(function () use ($type, $recordId, $currency, $isUsd, $rate, $rateSource, $rateDate, $note, $actor, $confirmDistinct, $acknowledgeRateWarnings) {
             $record = $type === 'investment'
@@ -89,7 +100,7 @@ class UsdValuationService
 
             $original = round((float) $record->amount, 2);
             $fx       = $isUsd ? 1.0 : (float) $rate;
-            $usd      = round($original * $fx, 2);
+            $usd      = (float) \App\Support\Decimal::mulHalfUp(\App\Support\Decimal::norm($original), \App\Support\Decimal::norm($fx), 2);   // exact decimal, half-up at final posting (Financial §4D)
 
             $previous = UsdValuation::query()->where('valuable_type', $type)->where('valuable_id', $record->id)->orderByDesc('id')->first();
 
@@ -114,6 +125,12 @@ class UsdValuationService
 
             return $valuation;
         });
+
+        // Immutable snapshot of the conversion (Financial §4B). A reconciliation adjustment writes its own, linked snapshot; a deposit's
+        // snapshot is built from the payment details staff recorded on the deposit (DepositPaymentService::valueApproved).
+        if ($conversionMethod !== 'adjustment' && !($conversionMethod === 'settlement_record' && $type === 'deposit')) {
+            rescue(fn () => $fxc->snapshotFromValuation($valuation, $conversionMethod ?? 'reference_rate_manual', $actor), null, true);
+        }
 
         // A new USD figure can change eligibility: re-evaluate just this investor (queued, de-duplicated).
         rescue(fn () => EvaluateInvestorRankJob::dispatch((int) $valuation->investor_id, 'currency_verified')->afterCommit(), null, true);

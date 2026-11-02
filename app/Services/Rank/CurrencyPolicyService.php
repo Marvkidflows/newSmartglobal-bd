@@ -57,7 +57,8 @@ class CurrencyPolicyService
                 'cancelled investments and unapproved deposits',
             ],
             'measures' => [
-                'total_invested'            => 'Verified USD total of non-cancelled investments (active + completed).',
+                'current_eligible_principal' => 'Verified USD principal currently invested in qualifying active positions, net of completed principal redemptions. Wallet cash never counts.',
+                'total_invested'            => 'Historical verified USD total of non-cancelled investments — reporting only; it never determines rank.',
                 'active_investment_amount'  => 'Verified USD total of investments whose status is active.',
                 'total_approved_deposits'   => 'Verified USD total of approved deposits. Kept separate: deposits are never counted as investments.',
             ],

@@ -54,6 +54,23 @@ class RankAuditService
     }
 
     /** Full, self-contained snapshot of a criterion (rule + metadata) at a point in time. */
+    /**
+     * The calculation breakdown retained WITH a rank decision (Financial Team §3D): the qualifying positions, principal amounts, completed
+     * cycles with their references, the exclusions, and the calculation timestamp. Read-only; computed from the ledger at decision time.
+     */
+    public function calculationSnapshot(int $investorId): array
+    {
+        $f = app(\App\Services\Rank\RankInvestmentLedger::class)->forUsers([$investorId], true)[$investorId];
+
+        return [
+            'calculated_at' => $f['calculated_at'], 'current_eligible_principal_usd' => $f['current_principal'],
+            'historical_total_usd' => $f['total_usd'], 'completed_cycles' => $f['cycles'], 'cycle_references' => $f['cycle_references'],
+            'positions' => $f['breakdown'],
+            'excluded' => ['unverified' => $f['unverified'], 'stale' => $f['stale'], 'duplicates' => $f['duplicates'], 'under_review_or_unresolved' => $f['blocked'],
+                           'cycles_awaiting_verification' => $f['cycles_awaiting_verification']],
+        ];
+    }
+
     public function criterionSnapshot(RankCriterion $c): array
     {
         $c->loadMissing(['rank', 'conditions']);

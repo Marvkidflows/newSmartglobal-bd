@@ -212,17 +212,28 @@ class DepositPaymentService
     {
         if (!$deposit->payment_verified_at || !$deposit->paid_currency) return;
 
+        // Cryptocurrency is not valued for rank eligibility until separately approved (Financial §4E): leave it unverified, queue it for review.
+        $fxc = app(\App\Services\Rank\FxControlService::class);
+        if ($fxc->cryptoValuationBlocked() && $fxc->isCryptoDeposit($deposit)) {
+            $fxc->openItem('deposit', (int) $deposit->id, 'crypto_unapproved', 'Cryptocurrency deposit: valuation for rank eligibility is not approved.');
+            return;
+        }
+
         $how = sprintf('Staff-verified payment on deposit #%d: %s %s%s.', $deposit->id, number_format((float) $deposit->paid_amount, 2), $deposit->paid_currency,
             $deposit->paid_currency === 'USD' ? '' : sprintf(' @ %s (%s, %s)', rtrim(rtrim(number_format((float) $deposit->fx_rate, 10, '.', ''), '0'), '.'), $deposit->rate_source, $deposit->rate_date?->toDateString()));
 
         foreach ([['deposit', $deposit->id], ['investment', $investment?->id]] as [$type, $id]) {
             if (!$id) continue;
             try {
-                $this->valuations->record($type, (int) $id, 'USD', null, null, null, $how, $actor, false);
+                $this->valuations->record($type, (int) $id, 'USD', null, null, null, $how, $actor, false, false, 'settlement_record');
             } catch (ValidationException $e) {
                 // e.g. looks like a duplicate investment — leave it unverified; it appears in the review queue.
                 Log::warning("Deposit #{$deposit->id}: {$type} #{$id} left unverified: " . collect($e->errors())->flatten()->first());
             }
         }
+
+        // Preserve the conversion staff recorded (original amount/currency, rate, source, timestamps, method, USD) as an immutable snapshot.
+        try { $fxc->snapshotFromDeposit($deposit->fresh(), $actor); }
+        catch (\Throwable $e) { Log::warning("Deposit #{$deposit->id}: conversion snapshot not written: " . $e->getMessage()); }
     }
 }

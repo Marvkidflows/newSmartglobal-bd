@@ -67,6 +67,7 @@ class RankAdditionalCriteriaService
     public function usable(RankAdditionalCriterion $c): bool
     {
         if (!$c->enabled) return false;
+        if (!AdditionalCriteriaDefaults::mayAffectRank($c->key)) return false;   // reporting-only / retired: never part of eligibility, even if a database row says enabled
         if ($c->is_monetary && !$this->currencyConfirmed()) return false;   // same gate as the core money rules
         if ($this->policyRequired($c->key) && !$this->policyChosen($c)) return false;
         return true;
@@ -100,6 +101,7 @@ class RankAdditionalCriteriaService
                     'key' => $c->key, 'label' => $c->label, 'description' => $c->description, 'unit' => $c->unit,
                     'monetary' => (bool) $c->is_monetary, 'enabled' => (bool) $c->enabled,
                     'in_effect' => $this->usable($c),
+                    'may_affect_rank' => AdditionalCriteriaDefaults::mayAffectRank($c->key),
                     'blocked_reason' => $this->blockedReason($c),
                     'thresholds' => $ranks->mapWithKeys(fn ($r) => [$r->key => $c->thresholds->firstWhere('investor_rank_id', $r->id)?->value])->all(),
                     'policy' => $policyDef ? [
@@ -117,6 +119,7 @@ class RankAdditionalCriteriaService
 
     protected function blockedReason(RankAdditionalCriterion $c): ?string
     {
+        if ($locked = AdditionalCriteriaDefaults::lockedReason($c->key)) return $locked;
         if ($c->is_monetary && !$this->currencyConfirmed()) {
             return 'Money criterion: cannot take effect until the currency policy is confirmed (Investor Ranks → Currency policy).';
         }
@@ -219,6 +222,9 @@ class RankAdditionalCriteriaService
 
             if ($enabled) {
                 $problems = [];
+                if ($locked = AdditionalCriteriaDefaults::lockedReason($key)) {
+                    throw ValidationException::withMessages(['criterion' => [$locked]]);
+                }
                 if ($this->policyRequired($key) && !$this->policyChosen($c)) {
                     $problems[] = 'Record how Management defines this criterion first (' . $this->policyRequired($key)['question'] . ')';
                 }

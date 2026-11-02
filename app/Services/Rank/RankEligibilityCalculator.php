@@ -47,7 +47,7 @@ class RankEligibilityCalculator
         $fields   = $criteria->flatMap(fn ($c) => $c->conditions->pluck('field'))->unique()->values()->all();
         $coreVals = $this->registry->resolveMany($ids, $fields);
         $addlVals = $this->additional->valuesFor($ids);
-        $ledger   = $this->ledger->forUsers($ids);
+        $ledger   = $this->ledger->forUsers($ids, count($ids) === 1);   // the full breakdown is built for a single investor, not for bulk sweeps
         $pending  = RankReview::pending()->whereIn('investor_id', $ids)->with(['proposedRank', 'currentRank', 'investor'])->get()->keyBy('investor_id');
 
         $out = [];
@@ -111,7 +111,12 @@ class RankEligibilityCalculator
                 'rank_status' => $user->rank_status ?? 'active',
                 'calculated_rank' => $eligibleRank?->badge(),
                 'pending_review' => $pend ? $this->reviews->present($pend) : null,
-                'core_values' => ['verified_total_invested_usd' => $ledger[$user->id]['total_usd'], 'completed_cycles' => $ledger[$user->id]['cycles']],
+                'core_values' => [
+                    'current_eligible_principal_usd' => $ledger[$user->id]['current_principal'],
+                    'verified_total_invested_usd'    => $ledger[$user->id]['total_usd'],   // historical total, reporting only (kept so stored history keeps its key)
+                    'completed_cycles'               => $ledger[$user->id]['cycles'],
+                ],
+                'calculation_breakdown' => $this->breakdownFor($ledger[$user->id]),
                 'additional_values' => $addlVals[$user->id] ?? [],
                 'prerequisites' => $prereq,
                 'ranks' => $perRank,
@@ -124,5 +129,21 @@ class RankEligibilityCalculator
     protected function fmt(mixed $v): string
     {
         return is_numeric($v) ? rtrim(rtrim(number_format((float) $v, 2), '0'), '.') : (string) ($v ?? 'n/a');
+    }
+
+    /** The detail retained with every decision: qualifying positions, principal, cycles, exclusions and when it was calculated. */
+    protected function breakdownFor(array $facts): array
+    {
+        return [
+            'calculated_at'     => $facts['calculated_at'] ?? now()->toIso8601String(),
+            'current_principal' => $facts['current_principal'],
+            'completed_cycles'  => $facts['cycles'],
+            'cycle_references'  => $facts['cycle_references'] ?? [],
+            'positions'         => $facts['breakdown'] ?? [],
+            'excluded'          => [
+                'unverified' => $facts['unverified'], 'stale' => $facts['stale'], 'duplicates' => $facts['duplicates'],
+                'under_review_or_unresolved' => $facts['blocked'], 'cycles_awaiting_verification' => $facts['cycles_awaiting_verification'],
+            ],
+        ];
     }
 }

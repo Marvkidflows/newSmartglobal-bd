@@ -66,7 +66,8 @@ class RankChangeService
                 $res       = $criterion ? $this->evaluation->evaluateRuleFor($user->id, $criterion->toRule(), $target->id) : null;
 
                 $snapshot = ['prerequisites' => $prereq]
-                    + ($criterion ? ['criterion' => $this->audit->criterionSnapshot($criterion), 'evaluation' => $res] : []);
+                    + ($criterion ? ['criterion' => $this->audit->criterionSnapshot($criterion), 'evaluation' => $res] : [])
+                    + ['calculation' => $this->audit->calculationSnapshot((int) $user->id)];
 
                 $unmet = $this->evaluation->shortfall($prereq, $res);
                 if ($unmet) { $needsOverride = true; $shortfall = $unmet; $shortfallCriterion = $criterion; }
@@ -75,7 +76,7 @@ class RankChangeService
                 $criterion = $this->activeCriterion($current->id);
                 if ($criterion) {
                     $res = $this->evaluation->evaluateRuleFor($user->id, $criterion->toRule(), $current->id);
-                    $snapshot = ['criterion' => $this->audit->criterionSnapshot($criterion), 'evaluation' => $res];
+                    $snapshot = ['criterion' => $this->audit->criterionSnapshot($criterion), 'evaluation' => $res, 'calculation' => $this->audit->calculationSnapshot((int) $user->id)];
                     // Lowering someone who STILL qualifies is an exception to the rules (the
                     // engine would otherwise re-upgrade them), so it needs the override path.
                     if ($res['satisfied']) $needsOverride = true;

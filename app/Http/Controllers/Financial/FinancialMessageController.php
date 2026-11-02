@@ -24,6 +24,7 @@ use App\Models\User;
 use App\Notifications\FinancialAlertNotification;
 use App\Services\FinancialAuditService;
 use App\Services\FinancialMailService;
+use App\Services\RichMessageBody;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
@@ -32,6 +33,12 @@ use Illuminate\Support\Str;
 
 class FinancialMessageController extends Controller
 {
+    /** Rich-text helper (plain `body` + sanitised `body_html`); resolved lazily so this controller's constructor/DI is unchanged. */
+    protected function rich(): RichMessageBody
+    {
+        return app(RichMessageBody::class);
+    }
+
     public function __construct(
         protected FinancialAuditService $audit,
         protected FinancialMailService $mail,
@@ -124,10 +131,12 @@ class FinancialMessageController extends Controller
 
         $v = $request->validate([
             'subject' => ['nullable', 'string', 'max:255'],
-            'body'    => ['required', 'string', 'max:5000'],
+            'body'      => ['nullable', 'string', 'max:5000'],      // legacy plain text (still accepted)
+            'body_html' => ['nullable', 'string', 'max:40000'],     // formatted message (sanitised here)
             'kind'    => ['nullable', 'in:message,notice'],
             'also_email' => ['nullable', 'boolean'],
         ]);
+        $content = $this->rich()->resolve($v);                       // ['body' => plain text, 'body_html' => safe html|null]
         $kind = $v['kind'] ?? 'message';
         if ($kind === 'notice') {
             Gate::authorize('financial.issue-notices');
@@ -138,13 +147,14 @@ class FinancialMessageController extends Controller
 
         $actor = $request->user();
 
-        $message = DB::transaction(function () use ($actor, $investor, $v, $kind) {
+        $message = DB::transaction(function () use ($actor, $investor, $v, $kind, $content) {
             $m = Message::create([
                 'sender_id'         => $actor->id,
                 'receiver_id'       => $investor->id,
                 'investor_id'       => $investor->id,
                 'subject'           => $v['subject'] ?? null,
-                'body'              => $v['body'],
+                'body'              => $content['body'],
+                'body_html'         => $content['body_html'],
                 'initiated_by'      => 'admin',
                 'department'        => 'financial',
                 'sender_label'      => Message::FINANCIAL_SENDER_LABEL,
@@ -167,7 +177,7 @@ class FinancialMessageController extends Controller
         // an email problem is reported back but never undoes it.
         $email = null;
         if ($request->boolean('also_email')) {
-            $email = $this->mail->sendNow($actor, $investor, $v['subject'] ?? null, $v['body'], $kind);
+            $email = $this->mail->sendNow($actor, $investor, $v['subject'] ?? null, $content['body'], $kind, $content['body_html']);
         }
 
         return response()->json([
@@ -187,10 +197,12 @@ class FinancialMessageController extends Controller
             'investor_ids'  => ['required_if:scope,selected', 'array', 'min:1', 'max:500'],
             'investor_ids.*'=> ['integer', 'distinct'],
             'subject'       => ['required', 'string', 'max:255'],
-            'body'          => ['required', 'string', 'max:5000'],
+            'body'          => ['nullable', 'string', 'max:5000'],      // legacy plain text (still accepted)
+            'body_html'     => ['nullable', 'string', 'max:40000'],     // formatted message (sanitised here)
             'kind'          => ['nullable', 'in:message,notice'],
             'also_email'    => ['nullable', 'boolean'],
         ]);
+        $content   = $this->rich()->resolve($v);                         // validated BEFORE anything is created
         $kind      = $v['kind'] ?? 'notice';
         $actor     = $request->user();
         $alsoEmail = $request->boolean('also_email');
@@ -219,14 +231,15 @@ class FinancialMessageController extends Controller
         $broadcastId = 'BC-' . strtoupper(Str::random(10));
         $now         = now();
 
-        DB::transaction(function () use ($recipients, $v, $kind, $actor, $broadcastId, $now, $alsoEmail) {
+        DB::transaction(function () use ($recipients, $v, $kind, $actor, $broadcastId, $now, $alsoEmail, $content) {
             foreach ($recipients->chunk(200) as $chunk) {
                 Message::insert($chunk->map(fn ($id) => [
                     'sender_id'         => $actor->id,
                     'receiver_id'       => $id,
                     'investor_id'       => $id,
                     'subject'           => $v['subject'],
-                    'body'              => $v['body'],
+                    'body'              => $content['body'],
+                    'body_html'         => $content['body_html'],     // same formatted text for every recipient, exactly as `body` already is
                     'initiated_by'      => 'admin',
                     'department'        => 'financial',
                     'sender_label'      => Message::FINANCIAL_SENDER_LABEL,
@@ -264,7 +277,7 @@ class FinancialMessageController extends Controller
         if ($alsoEmail) {
             foreach (User::whereIn('id', $recipients)->get() as $investor) {
                 try {
-                    $this->mail->queue($actor, $investor, $v['subject'], $v['body'], $broadcastId, $kind);
+                    $this->mail->queue($actor, $investor, $v['subject'], $content['body'], $broadcastId, $kind, $content['body_html']);
                     $emailsQueued++;
                 } catch (\Throwable $e) { report($e); }
             }
@@ -326,6 +339,7 @@ class FinancialMessageController extends Controller
                 'broadcast_id' => $broadcastId,
                 'subject'      => $first->subject,
                 'body'         => $first->body,
+                'body_html'    => $this->rich()->forDisplay($first->body_html),
                 'kind'         => $first->kind,
                 'sender_label' => $first->displaySender(),
                 'issued_by'    => User::find($first->sender_id)?->name ?? 'Unknown',
@@ -371,6 +385,7 @@ class FinancialMessageController extends Controller
             'recipient'    => $fromInvestor ? Message::FINANCIAL_SENDER_LABEL : ($investor->name ?? 'Investor'),
             'subject'      => $m->subject,
             'body'         => $m->body,
+            'body_html'    => $this->rich()->forDisplay($m->body_html),
             'kind'         => $m->kind,
             'department'   => $m->department,
             'broadcast_id' => $m->broadcast_id,

@@ -34,7 +34,9 @@
           {{-- BODY --}}
           <tr>
             <td style="padding:36px 32px; color:#1E293B; font-size:15px; line-height:1.7;">
-              {!! $bodyHtml !!}
+              {{-- OPT-IN (config mail.embed_inline_images, default OFF): data: images become inline cid: attachments when sent. Off until a real test send
+                   through the Brevo API transport proves they render; $message exists only while sending. --}}
+              {!! (isset($message) && config('mail.embed_inline_images', false)) ? app(\App\Services\EmailImageEmbedder::class)->embed($bodyHtml, $message) : $bodyHtml !!}
             </td>
           </tr>
 

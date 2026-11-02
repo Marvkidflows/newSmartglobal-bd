@@ -47,10 +47,11 @@ class FinancialMailService
      * Send one email copy immediately (used for Inbox replies).
      * Returns ['status' => 'sent'|'failed', 'id' => int, 'error' => ?string].
      */
-    public function sendNow(User $actor, User $investor, ?string $subject, string $text, string $kind = 'message'): array
+    public function sendNow(User $actor, User $investor, ?string $subject, string $text, string $kind = 'message', ?string $safeHtml = null): array
     {
         $subject = $subject ?: self::defaultSubject($kind);
-        $html    = self::toHtml($text);
+        // $safeHtml (already sanitised by RichMessageBody) is used for formatted messages; null keeps the original plain-text path unchanged.
+        $html    = $safeHtml !== null && trim($safeHtml) !== '' ? $safeHtml : self::toHtml($text);
         $sent    = $this->record($actor, $investor, $subject, $html, null);
 
         $error = null;
@@ -82,10 +83,10 @@ class FinancialMailService
      * Queue one email copy (used for Official Communications to many).
      * Delivered by SendBulkEmailJob, which updates the sent_emails status.
      */
-    public function queue(User $actor, User $investor, ?string $subject, string $text, string $batchId, string $kind = 'notice'): SentEmail
+    public function queue(User $actor, User $investor, ?string $subject, string $text, string $batchId, string $kind = 'notice', ?string $safeHtml = null): SentEmail
     {
         $subject = $subject ?: self::defaultSubject($kind);
-        $sent    = $this->record($actor, $investor, $subject, self::toHtml($text), $batchId);
+        $sent    = $this->record($actor, $investor, $subject, $safeHtml !== null && trim($safeHtml) !== '' ? $safeHtml : self::toHtml($text), $batchId);
 
         SendBulkEmailJob::dispatch($sent->id);
 

@@ -13,7 +13,7 @@ class RankAuditTest extends RankTestCase
     protected function seedHistory(): User
     {
         $u = $this->investor(['name' => 'Audit Subject']); $this->invest($u, 3000);
-        $this->createCriterion('silver', [$this->cond('total_invested', '>=', 500)]);
+        $this->createCriterion('silver', [$this->cond('current_eligible_principal', '>=', 500)]);
         app(RankEvaluationService::class)->evaluateUser($u->id);                 // automatic
         $this->actingAs($this->admin, 'sanctum')->postJson("/api/admin/ranks/investors/{$u->id}/assign",
             ['rank_id' => $this->rank('platinum')->id, 'reason' => 'Manual promotion by Management']); // manual
@@ -60,7 +60,7 @@ class RankAuditTest extends RankTestCase
         $this->seedHistory();
         $row = InvestorRankChange::where('change_type', 'automatic_upgrade')->sole();
 
-        $this->assertSame('total_invested', $row->criteria_snapshot['criterion']['conditions'][0]['field']);
+        $this->assertSame('current_eligible_principal', $row->criteria_snapshot['criterion']['conditions'][0]['field']);
         $this->assertSame(500, (int) $row->criteria_snapshot['criterion']['conditions'][0]['value']);
         $this->assertTrue($row->criteria_snapshot['evaluation']['conditions'][0]['passed']);
         $this->assertStringContainsString('Silver', $row->reason);
@@ -69,12 +69,12 @@ class RankAuditTest extends RankTestCase
     public function test_snapshot_still_explains_the_decision_after_the_criteria_change(): void
     {
         $u = $this->investor(); $this->invest($u, 3000);
-        $id = $this->createCriterion('silver', [$this->cond('total_invested', '>=', 500)])['criterion']['id'];
+        $id = $this->createCriterion('silver', [$this->cond('current_eligible_principal', '>=', 500)])['criterion']['id'];
         app(RankEvaluationService::class)->evaluateUser($u->id);
         $liveVersion = \App\Models\RankCriterion::find($id)->version;     // create (v1) + activate (v2)
 
         $this->actingAs($this->admin, 'sanctum')->putJson("/api/admin/ranks/criteria/{$id}",
-            ['name' => 'Silver', 'logic' => 'all', 'conditions' => [$this->cond('total_invested', '>=', 99999)]])->assertOk();
+            ['name' => 'Silver', 'logic' => 'all', 'conditions' => [$this->cond('current_eligible_principal', '>=', 99999)]])->assertOk();
 
         $row = InvestorRankChange::where('investor_id', $u->id)->sole();
         $this->assertSame(500, (int) $row->criteria_snapshot['criterion']['conditions'][0]['value']);   // rule AS APPLIED

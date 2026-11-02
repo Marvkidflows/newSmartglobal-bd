@@ -13,6 +13,34 @@ namespace App\Services\Rank;
 
 class AdditionalCriteriaDefaults
 {
+    /**
+     * Board decision §5: "Total approved deposits: maintain as a separate reporting metric. It shall not independently determine rank."
+     * The value stays visible for reporting; it can never take part in rank eligibility.
+     */
+    public const REPORTING_ONLY = ['approved_deposits_usd'];
+
+    /**
+     * Board decision §1/§5: the monetary threshold MUST use current verified eligible principal (the core rank measure). A separate
+     * "active investment amount" criterion would be a second, conflicting definition, so it is retired. Its history is kept.
+     */
+    public const RETIRED = ['active_investment_usd'];
+
+    public static function mayAffectRank(string $key): bool
+    {
+        return !in_array($key, array_merge(self::REPORTING_ONLY, self::RETIRED), true);
+    }
+
+    public static function lockedReason(string $key): ?string
+    {
+        if (in_array($key, self::REPORTING_ONLY, true)) {
+            return 'Reporting metric only (Board decision): total approved deposits can never take part in rank eligibility, because deposits may not be invested or may later be withdrawn.';
+        }
+        if (in_array($key, self::RETIRED, true)) {
+            return 'Retired: the core rank measure is now "Current eligible principal (verified)", so a separate active-investment criterion would duplicate and conflict with it.';
+        }
+        return null;
+    }
+
     public const RANK_ORDER = ['bronze', 'silver', 'gold', 'platinum', 'diamond', 'elite'];
 
     /** @return array<string, array> */
@@ -36,7 +64,7 @@ class AdditionalCriteriaDefaults
             ],
             'qualifying_investments' => [
                 'label' => 'Qualifying investments', 'unit' => 'investments', 'monetary' => false, 'sort' => 4,
-                'description' => 'Number of verified, non-cancelled, non-duplicate investment records (each counted once).',
+                'description' => 'Number of verified, non-cancelled, non-duplicate investment records (each counted once). This is an optional count of records, NOT the mandatory completed-cycle requirement, which is a core rank rule.',
                 'thresholds' => ['bronze' => 1, 'silver' => 2, 'gold' => 3, 'platinum' => 5, 'diamond' => 8, 'elite' => 12],
             ],
             'longest_duration_days' => [

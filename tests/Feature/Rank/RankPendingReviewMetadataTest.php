@@ -29,13 +29,13 @@ class RankPendingReviewMetadataTest extends RankTestCase
     {
         $this->actingAs($this->admin, 'sanctum')->putJson("/api/admin/ranks/criteria/{$id}", [
             'name' => 'Bronze criteria', 'logic' => 'all',
-            'conditions' => [$this->cond('total_invested', '>=', $minAmount), $this->cond('completed_investment_count', '>=', 1)],
+            'conditions' => [$this->cond('current_eligible_principal', '>=', $minAmount), $this->cond('completed_investment_count', '>=', 1)],
         ])->assertOk();
     }
 
     public function test_changed_criteria_for_the_same_rank_refresh_the_pending_review_without_a_second_review_or_alert(): void
     {
-        $this->createCriterion('bronze', [$this->cond('total_invested', '>=', 100), $this->cond('completed_investment_count', '>=', 1)]);
+        $this->createCriterion('bronze', [$this->cond('current_eligible_principal', '>=', 100), $this->cond('completed_investment_count', '>=', 1)]);
         $u = $this->investorWith(150, 1);                          // qualifies for Bronze before AND after the edit
         $this->evaluate($u);
 
@@ -59,7 +59,7 @@ class RankPendingReviewMetadataTest extends RankTestCase
         $liveId = (int) RankCriterion::where('is_active', true)->where('investor_rank_id', $this->rank('bronze')->id)->value('id');
         $this->assertSame($liveId, (int) $after->rank_criterion_id);                    // points at the criterion actually evaluated
         $this->assertNotSame($original['basis_hash'], $after->basis_hash);              // and at the NEW rules
-        $threshold = collect($after->evaluation['evaluation']['conditions'])->firstWhere('field', 'total_invested')['expected'];
+        $threshold = collect($after->evaluation['evaluation']['conditions'])->firstWhere('field', 'current_eligible_principal')['expected'];
         $this->assertEquals(120, $threshold);                                           // snapshot shows the new rule
 
         $this->assertNull($this->freshRank($u));                                        // evaluation never awards a rank
@@ -67,7 +67,7 @@ class RankPendingReviewMetadataTest extends RankTestCase
 
     public function test_evaluation_run_id_follows_a_new_run_and_is_kept_when_there_is_no_run(): void
     {
-        $this->createCriterion('bronze', [$this->cond('total_invested', '>=', 100), $this->cond('completed_investment_count', '>=', 1)]);
+        $this->createCriterion('bronze', [$this->cond('current_eligible_principal', '>=', 100), $this->cond('completed_investment_count', '>=', 1)]);
         $u = $this->investorWith(150, 1);
         $this->evaluate($u);
         $id = (int) RankReview::pending()->where('investor_id', $u->id)->value('id');
@@ -87,7 +87,7 @@ class RankPendingReviewMetadataTest extends RankTestCase
 
     public function test_a_rejection_made_after_the_criteria_changed_is_not_re_raised(): void
     {
-        $this->createCriterion('bronze', [$this->cond('total_invested', '>=', 100), $this->cond('completed_investment_count', '>=', 1)]);
+        $this->createCriterion('bronze', [$this->cond('current_eligible_principal', '>=', 100), $this->cond('completed_investment_count', '>=', 1)]);
         $u = $this->investorWith(150, 1);
         $this->evaluate($u);
         $review = RankReview::pending()->where('investor_id', $u->id)->sole();
@@ -107,7 +107,7 @@ class RankPendingReviewMetadataTest extends RankTestCase
 
     public function test_approval_still_revalidates_against_current_data_and_never_touches_money(): void
     {
-        $this->createCriterion('bronze', [$this->cond('total_invested', '>=', 100), $this->cond('completed_investment_count', '>=', 1)]);
+        $this->createCriterion('bronze', [$this->cond('current_eligible_principal', '>=', 100), $this->cond('completed_investment_count', '>=', 1)]);
         $u = $this->investorWith(150, 1);
         $this->evaluate($u);
         $review = RankReview::pending()->where('investor_id', $u->id)->sole();

@@ -35,6 +35,14 @@ class RankMultiCurrencyTest extends RankTestCase
         return $inv->fresh();
     }
 
+    /** An ACTIVE verified position: the rank amount is current principal, so completed cycles alone carry none. */
+    protected function activeIn(User $u, string $cur, float $amount, ?float $rate): InvestmentAccount
+    {
+        $inv = $this->invest($u, $amount, 30, 'active', false);
+        $this->verifyUsd($inv->fresh(), $cur, $rate, $cur === 'USD' ? null : 'Central bank mid-rate', $cur === 'USD' ? null : $this->today());
+        return $inv->fresh();
+    }
+
     protected function ranked(User $u): ?string
     {
         app(RankEvaluationService::class)->evaluateUser($u->id, 'test');
@@ -79,7 +87,7 @@ class RankMultiCurrencyTest extends RankTestCase
         $this->artisan('ranks:load-proposed')->assertSuccessful();
         foreach (self::THRESHOLDS as $key => [$amt, $cyc]) {
             $c = \App\Models\RankCriterion::with('conditions')->where('investor_rank_id', $this->rank($key)->id)->sole();
-            $this->assertEquals($amt, (float) $c->conditions->firstWhere('field', 'total_invested')->value);
+            $this->assertEquals($amt, (float) $c->conditions->firstWhere('field', 'current_eligible_principal')->value);
             $this->assertEquals($cyc, (float) $c->conditions->firstWhere('field', 'completed_investment_count')->value);
         }
     }
@@ -90,9 +98,10 @@ class RankMultiCurrencyTest extends RankTestCase
         $u = $this->investor();
         // Raw sum 6,000,000 — but only $3,900 once converted: Silver (1,000 + 2), not Gold (5,000 + 3).
         foreach ([0, 1, 2] as $i) $this->completedIn($u, 'NGN', 2000000, 0.00065, $i);
+        $this->activeIn($u, 'NGN', 6000000, 0.00065);   // current principal: raw 6,000,000 = $3,900
 
         $this->assertSame('silver', $this->ranked($u));
-        $this->assertEquals(3900.0, app(RankInvestmentLedger::class)->forUsers([$u->id])[$u->id]['total_usd']);
+        $this->assertEquals(3900.0, app(RankInvestmentLedger::class)->forUsers([$u->id])[$u->id]['current_principal']);
     }
 
     public function test_exact_boundary_after_conversion_qualifies_and_one_cent_short_does_not(): void
@@ -100,11 +109,13 @@ class RankMultiCurrencyTest extends RankTestCase
         $this->artisan('ranks:load-proposed --activate')->assertSuccessful();
 
         $exact = $this->investor();
-        foreach ([[2000, 0], [1000, 1], [1000, 2]] as [$amt, $i]) $this->completedIn($exact, 'GBP', $amt, 1.25, $i);   // = $5,000.00
+        foreach ([[2000, 0], [1000, 1], [1000, 2]] as [$amt, $i]) $this->completedIn($exact, 'GBP', $amt, 1.25, $i);   // 3 cycles
+        $this->activeIn($exact, 'GBP', 4000, 1.25);                                                                   // principal = $5,000.00
         $this->assertSame('gold', $this->ranked($exact));
 
         $short = $this->investor();
-        foreach ([[2000, 0], [1000, 1], [999.99, 2]] as [$amt, $i]) $this->completedIn($short, 'GBP', $amt, 1.25, $i);   // = $4,999.99
+        foreach ([[2000, 0], [1000, 1], [999.99, 2]] as [$amt, $i]) $this->completedIn($short, 'GBP', $amt, 1.25, $i);   // 3 cycles
+        $this->activeIn($short, 'GBP', 3999.99, 1.25);                                                                // principal = $4,999.99
         $this->assertSame('silver', $this->ranked($short));
     }
 
@@ -117,6 +128,7 @@ class RankMultiCurrencyTest extends RankTestCase
         for ($i = 4; $i < 8; $i++) $this->completedIn($u, 'EUR', 5000, 1.10, $i);       // 5,500 each
         for ($i = 8; $i < 11; $i++) $this->completedIn($u, 'GBP', 4000, 1.25, $i);      // 5,000 each
         $this->assertEquals(4 * 5000 + 4 * 5500 + 3 * 5000, app(RankInvestmentLedger::class)->forUsers([$u->id])[$u->id]['total_usd']);
+        $this->activeIn($u, 'USD', 50000, null);                                          // current principal $50,000 (Elite needs it too)
         $this->assertSame('diamond', $this->ranked($u));
 
         $this->completedIn($u, 'USD', 100, null, 11);                                    // the 12th cycle
@@ -270,11 +282,12 @@ class RankMultiCurrencyTest extends RankTestCase
         $this->artisan('ranks:load-proposed --activate')->assertSuccessful();
         $this->artisan('ranks:demo-data --evaluate')->assertSuccessful();
 
-        $this->assertSame(7, User::where('email', 'like', '%@demo.invalid')->count());
+        $n = count(\App\Console\Commands\LoadRankDemoData::scenarios());
+        $this->assertSame($n, User::where('email', 'like', '%@demo.invalid')->count());
         $this->assertSame(0, UsdValuation::where('currency', '!=', 'USD')->where('rate_source', 'not like', 'DEMO FIXTURE%')->count());
 
         $this->artisan('ranks:demo-data')->assertSuccessful();              // idempotent
-        $this->assertSame(7, User::where('email', 'like', '%@demo.invalid')->count());
+        $this->assertSame($n, User::where('email', 'like', '%@demo.invalid')->count());
     }
 
     public function test_demo_command_refuses_in_production_and_creates_nothing(): void

@@ -55,7 +55,7 @@ class RankScheduleTest extends RankTestCase
     public function test_retry_command_requeues_failed_alerts(): void
     {
         $inv = $this->investor(); $this->invest($inv, 900);
-        $this->createCriterion('silver', [$this->cond('total_invested', '>=', 500)]);
+        $this->createCriterion('silver', [$this->cond('current_eligible_principal', '>=', 500)]);
         app(\App\Services\Rank\RankEvaluationService::class)->evaluateUser($inv->id);
         $change = InvestorRankChange::where('investor_id', $inv->id)->sole();
         RankChangeNotification::where('investor_rank_change_id', $change->id)->update(['status' => 'failed']);

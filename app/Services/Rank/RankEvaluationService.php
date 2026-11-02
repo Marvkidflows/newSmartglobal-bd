@@ -200,6 +200,7 @@ class RankEvaluationService
             'criterion'  => $this->audit->criterionSnapshot($criterion),
             'evaluation' => $result,
             'evaluated_at' => now()->toIso8601String(),
+            'calculation' => $this->audit->calculationSnapshot((int) $user->id),
         ];
 
         // Query-builder write: no model events, no updated_at churn.
