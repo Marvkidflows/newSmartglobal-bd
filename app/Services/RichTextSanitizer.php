@@ -133,7 +133,9 @@ class RichTextSanitizer
     /** Subject: plain text only — tags removed, control characters removed, whitespace collapsed. */
     public function plain(string $text, int $max = 150): string
     {
-        $t = html_entity_decode(strip_tags($text), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        // strip_tags() removes the tags but KEEPS what is inside <script>/<style>/…, so drop those elements together with their content first.
+        $t = preg_replace('#<(script|style|template|noscript|iframe|object|embed|svg|math|xmp|noembed|noframes|textarea|title)\b[^>]*>.*?(?:</\1\s*>|$)#is', ' ', $text) ?? '';
+        $t = html_entity_decode(strip_tags($t), ENT_QUOTES | ENT_HTML5, 'UTF-8');
         $t = preg_replace('/[\x00-\x1F\x7F]+/u', ' ', $t) ?? '';
         $t = trim(preg_replace('/\s+/u', ' ', $t) ?? '');
         return mb_substr($t, 0, $max);

@@ -91,7 +91,8 @@ class FinancialRichMessageTest extends TestCase
             $this->assertStringContainsString('<strong>fee</strong>', $r->body_html);
             $this->assertStringNotContainsStringIgnoringCase('<script', $r->body_html);
         }
-        $this->assertSame(2, FinancialAuditLog::where('action', 'communication.broadcast_issued')->count());
+        // ONE audit entry per broadcast (this test sends a single broadcast; the older test counts 2 because it sends two).
+        $this->assertSame(1, FinancialAuditLog::where('action', 'communication.broadcast_issued')->count());
 
         $hist = $this->fin()->getJson('/api/financial/messages/broadcasts/' . $res->json('broadcast_id'))->assertOk();
         $this->assertStringContainsString('<strong>fee</strong>', json_encode($hist->json(), JSON_UNESCAPED_SLASHES));

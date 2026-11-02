@@ -58,7 +58,8 @@ class InvestorEmailController extends Controller
             'email' => [
                 'id'         => $sentEmail->id,
                 'subject'    => $sentEmail->subject,
-                'body_html'  => $sentEmail->body_html,
+                // sanitised on the way out: this HTML is injected into the investor's page, and older rows were stored unsanitised
+                'body_html'  => app(\App\Services\RichTextSanitizer::class)->sanitizeEmail((string) $sentEmail->body_html),
                 'sender'     => $sentEmail->sender_label ?: 'Smart System Investment',
                 'department' => $sentEmail->department ?? 'admin',
                 'sent_at'    => $sentEmail->sent_at?->toDateTimeString(),

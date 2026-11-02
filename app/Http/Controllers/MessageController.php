@@ -7,6 +7,7 @@ use App\Models\Message;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use App\Services\RichMessageBody;
 use Illuminate\Support\Facades\Notification;
 use App\Notifications\FinancialAlertNotification;
 
@@ -21,6 +22,12 @@ class MessageController extends Controller
      * Admin sees a list of ALL investors.
      * Each investor shows: last message preview + unread count.
      */
+  /** Rich-text helper (plain `body` + sanitised `body_html`); resolved lazily so the constructor/DI of this controller is unchanged. */
+    protected function rich(): RichMessageBody
+    {
+        return app(RichMessageBody::class);
+    }
+
   public function adminIndex(Request $request)
 {
     $investors = User::where('role', 'investor')->with('investorRank')->get();
@@ -102,6 +109,7 @@ class MessageController extends Controller
             ->map(fn($m) => [
                 'id'           => $m->id,
                 'body'         => $m->body,
+                'body_html'    => $this->rich()->forDisplay($m->body_html),
                 'from'         => $m->initiated_by,  // 'admin' or 'investor'
                 'subject'      => $m->subject,
                 'created_at'   => $m->created_at->toDateTimeString(),
@@ -154,9 +162,11 @@ class MessageController extends Controller
         }
 
         $validated = $request->validate([
-            'subject' => ['nullable', 'string', 'max:255'],
-            'body'    => ['required', 'string', 'max:5000'],
+            'subject'   => ['nullable', 'string', 'max:255'],
+            'body'      => ['nullable', 'string', 'max:5000'],      // legacy plain text (still accepted)
+            'body_html' => ['nullable', 'string', 'max:40000'],     // formatted message (sanitised here)
         ]);
+        $content = $this->rich()->resolve($validated);               // ['body' => plain text, 'body_html' => safe html|null]
 
         $admin = Auth::user();
 
@@ -165,7 +175,8 @@ class MessageController extends Controller
             'receiver_id'      => $investor->id,
             'investor_id'      => $investor->id,
             'subject'          => $validated['subject'] ?? null,
-            'body'             => $validated['body'],
+            'body'             => $content['body'],
+            'body_html'        => $content['body_html'],
             'initiated_by'     => 'admin',
             'read_by_admin'    => true,   // admin wrote it so they've "read" it
             'read_by_investor' => false,  // investor hasn't seen it yet
@@ -177,6 +188,7 @@ class MessageController extends Controller
                 'data'    => [
                     'id'         => $message->id,
                     'body'       => $message->body,
+                    'body_html'  => $this->rich()->forDisplay($message->body_html),
                     'from'       => 'admin',
                     'created_at' => $message->created_at->toDateTimeString(),
                     'time_ago'   => $message->created_at->diffForHumans(),
@@ -232,6 +244,7 @@ class MessageController extends Controller
             ->map(fn($m) => [
                 'id'           => $m->id,
                 'body'         => $m->body,
+                'body_html'    => $this->rich()->forDisplay($m->body_html),
                 'from'         => $m->initiated_by,  // 'admin' or 'investor' (unchanged)
                 'subject'      => $m->subject,
                 'created_at'   => $m->created_at->toDateTimeString(),
@@ -293,12 +306,14 @@ class MessageController extends Controller
 
         $validated = $request->validate([
             'subject'    => ['nullable', 'string', 'max:255'],
-            'body'       => ['required', 'string', 'max:5000'],
+            'body'       => ['nullable', 'string', 'max:5000'],      // legacy plain text (still accepted)
+            'body_html'  => ['nullable', 'string', 'max:40000'],     // formatted message (sanitised here)
             // Added: which team the investor is writing to. Defaults to the
             // existing support inbox so current clients are unaffected.
             'department' => ['nullable', 'in:admin,financial'],
         ]);
 
+        $content    = $this->rich()->resolve($validated);            // ['body' => plain text, 'body_html' => safe html|null]
         $department = $validated['department'] ?? 'admin';
 
         if ($department === 'financial') {
@@ -312,7 +327,8 @@ class MessageController extends Controller
                 'receiver_id'       => $financial->id,
                 'investor_id'       => $investor->id,
                 'subject'           => $validated['subject'] ?? null,
-                'body'              => $validated['body'],
+                'body'              => $content['body'],
+                'body_html'         => $content['body_html'],
                 'initiated_by'      => 'investor',
                 'department'        => 'financial',
                 'read_by_admin'     => true,   // not part of the support inbox's unread count
@@ -325,7 +341,7 @@ class MessageController extends Controller
                     User::where('role', 'financial')->get(),
                     new FinancialAlertNotification(
                         'New investor message',
-                        ($investor->name ?? 'An investor') . ': ' . str($validated['subject'] ?: $validated['body'])->limit(80),
+                        ($investor->name ?? 'An investor') . ': ' . str(($validated['subject'] ?? null) ?: $content['body'])->limit(80),
                         'investor_message',
                         ['investor_id' => $investor->id, 'message_id' => $message->id]
                     )
@@ -337,6 +353,7 @@ class MessageController extends Controller
                 'data'    => [
                     'id'           => $message->id,
                     'body'         => $message->body,
+                    'body_html'    => $this->rich()->forDisplay($message->body_html),
                     'from'         => 'investor',
                     'subject'      => $message->subject,
                     'department'   => 'financial',
@@ -364,7 +381,8 @@ class MessageController extends Controller
             'receiver_id'      => $admin->id,
             'investor_id'      => $investor->id,
             'subject'          => $validated['subject'] ?? null,
-            'body'             => $validated['body'],
+            'body'             => $content['body'],
+            'body_html'        => $content['body_html'],
             'initiated_by'     => 'investor',
             'read_by_admin'    => false,  // admin hasn't read it yet
             'read_by_investor' => true,   // investor wrote it
@@ -376,6 +394,7 @@ class MessageController extends Controller
                 'data'    => [
                     'id'         => $message->id,
                     'body'       => $message->body,
+                    'body_html'  => $this->rich()->forDisplay($message->body_html),
                     'from'       => 'investor',
                     'created_at' => $message->created_at->toDateTimeString(),
                     'time_ago'   => $message->created_at->diffForHumans(),
@@ -409,6 +428,7 @@ class MessageController extends Controller
                 'message' => [
                     'id'         => $message->id,
                     'body'       => $message->body,
+                    'body_html'  => $this->rich()->forDisplay($message->body_html),
                     'from'       => $message->initiated_by,
                     'created_at' => $message->created_at->toDateTimeString(),
                 ],

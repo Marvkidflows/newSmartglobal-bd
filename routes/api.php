@@ -218,7 +218,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/messages/create',    [MessageController::class, 'investorCreate'])->name('messages.create');
         Route::get('/messages/unread-count', [MessageController::class, 'investorUnreadCount'])->name('messages.unread-count');
         // 60 posts/minute per user (approved): investors can now submit formatted HTML, so unbounded posting is not acceptable.
-        Route::post('/messages',          [MessageController::class, 'investorStore'])->middleware('throttle:60,1')->name('messages.store');
+        Route::post('/messages',          [MessageController::class, 'investorStore'])->middleware('throttle:60,1,investor-messages')->name('messages.store');
         Route::get('/messages/{message}', [MessageController::class, 'investorShow'])->name('messages.show');
         
         
@@ -402,7 +402,7 @@ Route::get('/investor/deposits/{deposit}',          [InvestorDepositController::
         Route::get('/marvflow-messages',               [MarvflowInboxController::class, 'index'])->defaults('inbox', 'admin')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.index');
         Route::get('/marvflow-messages/unread-count',  [MarvflowInboxController::class, 'unreadCount'])->defaults('inbox', 'admin')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.unread');
         Route::get('/marvflow-messages/{id}',          [MarvflowInboxController::class, 'show'])->whereNumber('id')->defaults('inbox', 'admin')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.show');
-        Route::post('/marvflow-messages/{id}/reply',   [MarvflowInboxController::class, 'reply'])->whereNumber('id')->defaults('inbox', 'admin')->middleware('throttle:30,1')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.reply');
+        Route::post('/marvflow-messages/{id}/reply',   [MarvflowInboxController::class, 'reply'])->whereNumber('id')->defaults('inbox', 'admin')->middleware('throttle:30,1,mfm-ssi-reply-admin')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.reply');
 
         // Admin <-> Financial shared channel — one conversation, both
         // sides post and read the same thread.
@@ -658,7 +658,7 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         Route::get('/marvflow-messages',               [MarvflowInboxController::class, 'index'])->defaults('inbox', 'financial')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.index');
         Route::get('/marvflow-messages/unread-count',  [MarvflowInboxController::class, 'unreadCount'])->defaults('inbox', 'financial')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.unread');
         Route::get('/marvflow-messages/{id}',          [MarvflowInboxController::class, 'show'])->whereNumber('id')->defaults('inbox', 'financial')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.show');
-        Route::post('/marvflow-messages/{id}/reply',   [MarvflowInboxController::class, 'reply'])->whereNumber('id')->defaults('inbox', 'financial')->middleware('throttle:30,1')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.reply');
+        Route::post('/marvflow-messages/{id}/reply',   [MarvflowInboxController::class, 'reply'])->whereNumber('id')->defaults('inbox', 'financial')->middleware('throttle:30,1,mfm-ssi-reply-financial')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.reply');
 
         // Admin <-> Financial shared channel — same table/controller as
         // the admin side; one shared conversation, not per-user threads.
@@ -849,10 +849,10 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         Route::get('/messages/recipients',     [MarvflowMessageController::class, 'recipients'])->middleware(EnsureMessagingAccountActive::class)->name('messages.recipients');
         Route::get('/messages/unread-count',   [MarvflowMessageController::class, 'unreadCount'])->middleware(EnsureMessagingAccountActive::class)->name('messages.unread-count');
         Route::get('/messages',                [MarvflowMessageController::class, 'index'])->middleware(EnsureMessagingAccountActive::class)->name('messages.index');
-        Route::post('/messages',               [MarvflowMessageController::class, 'store'])->middleware('throttle:20,1')->middleware(EnsureMessagingAccountActive::class)->name('messages.store');
-        Route::post('/messages/direct',        [MarvflowMessageController::class, 'storeDirect'])->middleware('throttle:30,1')->middleware(EnsureMessagingAccountActive::class)->name('messages.direct');
+        Route::post('/messages',               [MarvflowMessageController::class, 'store'])->middleware('throttle:20,1,mfm-email')->middleware(EnsureMessagingAccountActive::class)->name('messages.store');
+        Route::post('/messages/direct',        [MarvflowMessageController::class, 'storeDirect'])->middleware('throttle:30,1,mfm-quick')->middleware(EnsureMessagingAccountActive::class)->name('messages.direct');
         Route::get('/messages/{id}',           [MarvflowMessageController::class, 'show'])->whereNumber('id')->middleware(EnsureMessagingAccountActive::class)->name('messages.show');
-        Route::post('/messages/{id}/reply',    [MarvflowMessageController::class, 'reply'])->whereNumber('id')->middleware('throttle:30,1')->middleware(EnsureMessagingAccountActive::class)->name('messages.reply');
+        Route::post('/messages/{id}/reply',    [MarvflowMessageController::class, 'reply'])->whereNumber('id')->middleware('throttle:30,1,mfm-reply')->middleware(EnsureMessagingAccountActive::class)->name('messages.reply');
         Route::post('/requests/{id}/assign',   [MarvflowRequestController::class, 'assign'])->name('requests.assign');
 
         Route::middleware('marvflow.lead')->group(function () {
