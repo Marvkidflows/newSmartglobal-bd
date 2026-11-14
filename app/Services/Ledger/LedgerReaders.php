@@ -39,6 +39,17 @@ class LedgerReaders
             ->pluck('total', 'investment_id')->map(fn ($v) => (float) $v)->all();
     }
 
+    /** Same as reductions() but exact: 2-decimal strings (signed), never a float. @param int[] $investmentIds @return array<int, string> */
+    public static function reductionsDecimal(array $investmentIds): array
+    {
+        if (!$investmentIds || !self::has('principal_movements')) return [];
+
+        return DB::table('principal_movements')
+            ->whereIn('investment_id', $investmentIds)->where('status', 'completed')->whereIn('kind', self::REDUCING)
+            ->groupBy('investment_id')->selectRaw('investment_id, SUM(amount) as total')
+            ->pluck('total', 'investment_id')->map(fn ($v) => \App\Support\Decimal::money($v))->all();
+    }
+
     /**
      * @param  int[]  $investmentIds
      * @param  array<int, int|null>  $depositByInvestment  investment_id => source_deposit_id

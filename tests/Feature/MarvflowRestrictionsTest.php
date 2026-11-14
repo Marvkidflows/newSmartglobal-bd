@@ -136,17 +136,20 @@ class MarvflowRestrictionsTest extends TestCase
         $this->assertNull(MarvflowMessage::find($adminThread)->read_at);        // a restricted account cannot even mark a message read
     }
 
-    public function test_the_restriction_is_limited_to_the_messaging_endpoints(): void
+    // CHANGED by audit F-15 (2 Nov 2026): previously this test pinned the restriction to the messaging endpoints only ("the app-wide suspension
+    // policy is a separate decision"). The audit requires suspended/deactivated STAFF to lose access to protected endpoints altogether, so the
+    // role gate now refuses them everywhere. This is a deliberate policy change that Management must confirm (docs/MANAGEMENT_DECISIONS.md).
+    public function test_restricted_staff_are_refused_on_every_protected_endpoint_not_only_messaging(): void
     {
         $this->restrict($this->owner, 'suspended');
         $as = fn () => $this->actingAs($this->owner->fresh(), 'sanctum');
 
         $as()->getJson('/api/marvflow/messages')->assertStatus(403)->assertJsonPath('code', 'account_restricted');
-        // other MarvFlow endpoints are NOT gated by this feature (whatever they answer, it is not our restriction response)
         foreach (['/api/marvflow/dashboard', '/api/marvflow/requests'] as $url) {
-            $res = $as()->getJson($url);
-            $this->assertNotSame('account_restricted', $res->json('code'), $url);
+            $as()->getJson($url)->assertStatus(403)->assertJsonPath('code', 'account_restricted');
         }
+        $this->restrict($this->owner, 'active');
+        $this->assertNotSame(403, $this->actingAs($this->owner->fresh(), 'sanctum')->getJson('/api/marvflow/requests')->getStatusCode());
     }
 
     // ── 2. Admin replies to a restricted owner: pending delivery ──────────────

@@ -95,6 +95,9 @@ class RankPresenter
             'criterion_id'      => $r->rank_criterion_id,
             'criterion_version' => $r->criterion_version,
             'failed_conditions' => $r->failed_conditions,
+            // Present only while the review is open and an investment's currency valuation is unverified, stale or unresolved: the shortfall
+            // may be valuation-related and needs Financial verification (it must not be read as a definitive failure).
+            'valuation_note'    => $r->status === 'open' ? app(RankValuationNote::class)->forInvestor((int) $r->investor_id) : null,
             'status'            => $r->status,
             'alert_delivered'   => (bool) $r->notified_at,
             'resolved_by_name'  => $r->resolved_by_name,

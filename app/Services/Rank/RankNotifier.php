@@ -142,11 +142,18 @@ class RankNotifier
         if (!$review || $review->notified_at || $review->status !== 'open') return;
 
         $investor = User::find($review->investor_id);
+        $note     = app(RankValuationNote::class)->forInvestor((int) $review->investor_id);   // null unless a currency valuation may be the cause
+        $who      = $investor?->name ?? $investor?->full_name ?? 'An investor';
         $payload = [
             'type'           => 'rank_downgrade_review',
             'title'          => 'Rank review required',
-            'message'        => sprintf('%s (%s) no longer meets the criteria for %s. No change has been made — please review.',
-                                    $investor?->name ?? $investor?->full_name ?? 'An investor', $investor?->account_id, $review->rank?->name),
+            'message'        => $note
+                ? sprintf('%s (%s) may no longer meet the criteria for %s, but this may be valuation-related: %d investment record(s) have an unverified, stale or unresolved currency valuation and are left out of the figures. Financial verification is required before deciding. No change has been made.',
+                    $who, $investor?->account_id, $review->rank?->name, $note['records'])
+                : sprintf('%s (%s) no longer meets the criteria for %s. No change has been made — please review.',
+                    $who, $investor?->account_id, $review->rank?->name),
+            'valuation_related' => (bool) $note,
+            'valuation_note'    => $note['message'] ?? null,
             'investor_id'    => $review->investor_id,
             'account_id'     => $investor?->account_id,
             'investor_name'  => $investor?->name ?? $investor?->full_name,

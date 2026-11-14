@@ -30,7 +30,7 @@ class FinancialTeamSeeder extends Seeder
 
         $password = Str::password(16);
 
-        User::create([
+        User::unguarded(fn () => User::create([
             'name'                   => 'Financial Team',
             'email'                  => $email,
             'password'               => Hash::make($password),
@@ -40,7 +40,7 @@ class FinancialTeamSeeder extends Seeder
             'registration_stage'     => 4,
             'registration_completed' => true,
             'email_verified_at'      => now(),
-        ]);
+        ]));
 
         $this->command?->info('Financial team test account created:');
         $this->command?->info("  Email:    {$email}");

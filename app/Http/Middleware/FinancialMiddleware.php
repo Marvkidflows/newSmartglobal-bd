@@ -25,6 +25,8 @@ class FinancialMiddleware
         $user = $request->user();
 
         if ($user && ($user->role === 'financial' || $user->role === 'admin')) {
+            // F-15: a suspended / deactivated staff account is refused and its token revoked
+            if ($blocked = \App\Support\StaffAccountGuard::refuse($request, $user)) return $blocked;
             return $next($request);
         }
 

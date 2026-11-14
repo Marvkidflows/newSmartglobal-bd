@@ -141,14 +141,14 @@ class RichTextSanitizerProfilesTest extends TestCase
 
     // ── images: consistent rules ──────────────────────────────────────────────
 
-    public function test_https_and_raster_data_images_are_kept_in_the_email_profile_only(): void
+    public function test_external_https_images_are_dropped_by_default_and_raster_data_images_are_kept_in_the_email_profile_only(): void
     {
+        // Management decision #6: external (https) images are dropped unless config privacy.email_external_images is on. This unit test boots no
+        // application, so the sanitizer fails CLOSED here; the opted-in path is covered in tests/Feature/EmailCenterSanitizationTest.
         $png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
         $html = '<p><img src="https://cdn.example.com/logo.png" alt="Logo" width="120" height="40"><img src="' . $png . '" alt="px"></p>';
         $out  = $this->s->sanitizeEmail($html);
-        $this->assertStringContainsString('src="https://cdn.example.com/logo.png"', $out);
-        $this->assertStringContainsString('alt="Logo"', $out);
-        $this->assertStringContainsString('width="120"', $out);
+        $this->assertStringNotContainsString('cdn.example.com', $out);
         $this->assertStringContainsString($png, $out);
         $this->assertStringNotContainsString('<img', $this->s->sanitize($html));                  // message profile: no images at all
     }
@@ -182,5 +182,17 @@ class RichTextSanitizerProfilesTest extends TestCase
         $this->assertSame('', $this->s->sanitize('<p>' . str_repeat('a', 400001) . '</p>'));
         $this->assertNotSame('', $this->s->sanitize('<p>' . str_repeat('a', 100000) . '</p>'));
         $this->assertSame('', $this->s->sanitize('<p>' . str_repeat('<b>x</b>', 25000) . '</p>'));      // more than the element cap
+    }
+
+    public function test_positioning_and_overlay_css_is_removed_on_both_profiles(): void
+    {
+        $s = new \App\Services\RichTextSanitizer();
+        $in = '<p style="position:fixed;top:0;left:0;width:100%;height:100%;z-index:9999;color:#ff0000">x</p>';
+        foreach ([\App\Services\RichTextSanitizer::PROFILE_MESSAGE, \App\Services\RichTextSanitizer::PROFILE_EMAIL] as $profile) {
+            $out = strtolower($s->sanitize($in, $profile));
+            foreach (['position', 'fixed', 'z-index', 'top:', 'left:', 'inset'] as $bad) $this->assertStringNotContainsString($bad, $out, "$profile kept $bad");
+            $this->assertStringContainsString('color:#ff0000', $out);
+        }
+        $this->assertStringNotContainsString('style=', $s->sanitize('<div style="position:absolute;top:0">x</div>'));
     }
 }

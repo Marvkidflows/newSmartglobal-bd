@@ -179,6 +179,8 @@ class RankBenefitController extends Controller
         $type = $v['type'] ?? 'benefits';
         $file = 'ssi-rank-' . $type . '-' . now()->format('Ymd-His') . '.csv';
 
+        app(\App\Services\Rank\RankBenefitService::class)->audit('rank_export', null, 'exported', $request->user(), null, ['type' => $type, 'file' => $file]);   // who exported what, before any data leaves
+
         return response()->streamDownload(function () use ($type) {
             $out = fopen('php://output', 'w');
             fwrite($out, "\xEF\xBB\xBF");

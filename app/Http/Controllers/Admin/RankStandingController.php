@@ -82,6 +82,11 @@ class RankStandingController extends Controller
         $type = $v['type'] ?? 'investors';
         $file = 'ssi-rank-' . $type . '-' . now()->format('Ymd-His') . '.csv';
 
+        // Every export of investor rank data is recorded (who, what, which filters) BEFORE any data is streamed, in the append-only rank audit.
+        app(\App\Services\Rank\RankBenefitService::class)->audit('rank_export', null, 'exported', $request->user(), null, [
+            'type' => $type, 'filters' => array_filter(['rank' => $v['rank'] ?? null, 'status' => $v['status'] ?? null]), 'file' => $file,
+        ]);
+
         return response()->streamDownload(function () use ($type, $v) {
             $out = fopen('php://output', 'w');
             fwrite($out, "\xEF\xBB\xBF");   // UTF-8 BOM so spreadsheets read names correctly
@@ -113,7 +118,9 @@ class RankStandingController extends Controller
 
             fputcsv($out, ['Account ID', 'Name', 'Email', 'Assigned rank', 'Rank status', 'Rank changed', 'Calculated eligible rank', 'Pending review for',
                 'Current eligible principal (USD, verified)', 'Completed cycles', 'Qualified referrals', 'Active investment (USD)', 'Approved deposits (USD)',
-                'Qualifying investments', 'Longest duration (days)', 'Unmet requirements for next rank']);
+                'Qualifying investments', 'Longest duration (days)', 'Unmet requirements for next rank',
+                // appended at the END so any existing reader of the earlier columns keeps working
+                'Next rank', 'Progress to next rank (%)', 'Currency records awaiting verification or review', 'Calculated at (UTC)']);
 
             $q = User::query()->where('role', 'investor')->with('investorRank')->orderBy('id');
             if (!empty($v['status'])) $q->where('rank_status', $v['status']);
@@ -123,21 +130,49 @@ class RankStandingController extends Controller
             }
 
             $q->chunkById(100, function ($users) use ($out) {
+                $byId = $users->keyBy('id');
                 foreach ($this->calculator->calculateMany($users) as $row) {
                     $next = collect($row['ranks'])->first(fn ($r) => $r['rank']['level'] > ($row['assigned_rank']['level'] ?? 0));
                     $a = $row['additional_values'];
                     fputcsv($out, array_map([$this, 'safe'], [
                         $row['account_id'], $row['name'], $row['email'], $row['assigned_rank']['name'] ?? 'Unranked', $row['rank_status'],
-                        null, $row['calculated_rank']['name'] ?? 'None', $row['pending_review']['proposed_rank']['name'] ?? '',
+                        $byId[$row['investor_id']]->rank_changed_at?->utc()->format('Y-m-d H:i:s'), $row['calculated_rank']['name'] ?? 'None', $row['pending_review']['proposed_rank']['name'] ?? '',
                         $row['core_values']['current_eligible_principal_usd'], $row['core_values']['completed_cycles'],
                         $a['qualified_referrals']['value'] ?? 0, $a['active_investment_usd']['value'] ?? 0, $a['approved_deposits_usd']['value'] ?? 0,
                         $a['qualifying_investments']['value'] ?? 0, $a['longest_duration_days']['value'] ?? 0,
                         $next ? implode(' | ', $next['unmet']) : '',
+                        $next['rank']['name'] ?? '', $this->progressPercent($next), $this->awaitingVerification($row),
+                        $row['calculation_breakdown']['calculated_at'] ?? '',
                     ]));
                 }
             });
             fclose($out);
         }, $file, ['Content-Type' => 'text/csv; charset=UTF-8']);
+    }
+
+    /**
+     * Progress toward the next rank = the LOWER of its mandatory conditions (money and cycles), 0-100, from the same calculation the dashboard
+     * uses. Blank when the next rank has no active, usable rule (there is nothing to measure against) or the highest rank is held.
+     */
+    protected function progressPercent(?array $next): string
+    {
+        if (!$next || ($next['rule_state'] ?? null) !== 'active') return '';
+        $parts = [];
+        foreach ($next['core']['conditions'] ?? [] as $c) {
+            if (!is_numeric($c['expected'] ?? null) || !is_numeric($c['actual'] ?? null) || (float) $c['expected'] <= 0) continue;
+            $parts[] = (int) min(100, max(0, floor((float) $c['actual'] / (float) $c['expected'] * 100)));
+        }
+        return $parts ? (string) min($parts) : '';
+    }
+
+    /** How many records are kept OUT of the figures because their currency is unverified, stale, duplicated or under review. */
+    protected function awaitingVerification(array $row): int
+    {
+        $ids = [];   // a completed record that is also unverified appears in two lists: count each record once
+        foreach ($row['calculation_breakdown']['excluded'] ?? [] as $list) {
+            foreach ((array) $list as $id) $ids[$id] = true;
+        }
+        return count($ids);
     }
 
     /** Neutralise spreadsheet-formula injection from user-controlled text (names, reasons). */

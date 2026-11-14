@@ -12,6 +12,10 @@ return [
     // §1B/§2: the wallet ledger (separate classifications), linked investment allocations and position-level principal movements.
     'ledger_enabled' => (bool) env('FINANCIAL_LEDGER_ENABLED', false),
 
+    // R6: how a deposit's USD value is computed. 'legacy_float' (default) = the original float round(); 'exact_decimal' = exact half-up (can differ by
+    // 0.01 USD in rare cases; rank thresholds read this value). Do NOT switch without written Finance approval (decision #5).
+    'deposit_valuation_mode' => env('FINANCIAL_DEPOSIT_VALUATION_MODE', 'legacy_float'),
+
     // §4E: cryptocurrency valuation stays DISABLED for rank eligibility until separately approved. Not a switch to flip casually.
     'crypto_rank_valuation_enabled' => (bool) env('FINANCIAL_CRYPTO_RANK_VALUATION', false),
 

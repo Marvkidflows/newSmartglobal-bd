@@ -276,7 +276,7 @@ class RankProposedCriteriaTest extends RankTestCase
             $this->assertNull($this->freshRank($inv), "$status must not be ranked");
             $this->assertSame(0, InvestorRankChange::where('investor_id', $inv->id)->count());
 
-            $inv->update(['status' => 'active']);                                // legitimately changes
+            $inv->forceFill(['status' => 'active'])->save();                                // legitimately changes
             $this->engine()->evaluateUser($inv->id);
             $this->assertSame('silver', $this->freshRank($inv), "$status → active then qualifies");
         }
@@ -296,7 +296,7 @@ class RankProposedCriteriaTest extends RankTestCase
             $this->engine()->evaluateUser($inv->id);
             $this->assertNull($this->freshRank($inv), $label);
 
-            $inv->update(['kyc_status' => 'approved', 'kyc_verified' => true]);  // Admin approves
+            $inv->forceFill(['kyc_status' => 'approved', 'kyc_verified' => true])->save();  // Admin approves
             $this->engine()->evaluateUser($inv->id);
             $this->assertSame('gold', $this->freshRank($inv), "$label → verified");
         }
@@ -327,7 +327,7 @@ class RankProposedCriteriaTest extends RankTestCase
         $this->engine()->evaluateUser($inv->id);
         $this->assertSame('silver', $this->freshRank($inv));
 
-        $inv->update(['status' => 'suspended']);
+        $inv->forceFill(['status' => 'suspended'])->save();
         for ($i = 0; $i < 3; $i++) $this->engine()->evaluateUser($inv->id);
 
         $this->assertSame('silver', $this->freshRank($inv));                              // untouched
@@ -340,7 +340,7 @@ class RankProposedCriteriaTest extends RankTestCase
         app(RankNotifier::class)->deliverReview($review->id);
         $this->assertSame(1, $this->admin->notifications()->where('data->type', 'rank_downgrade_review')->count());
 
-        $inv->update(['status' => 'active']);                                              // eligibility returns
+        $inv->forceFill(['status' => 'active'])->save();                                              // eligibility returns
         $this->engine()->evaluateUser($inv->id);
         $this->assertSame(0, RankDowngradeReview::open()->where('investor_id', $inv->id)->count());
         $this->assertSame('silver', $this->freshRank($inv));
@@ -353,7 +353,7 @@ class RankProposedCriteriaTest extends RankTestCase
         $this->engine()->evaluateUser($inv->id);
         $this->assertSame('gold', $this->freshRank($inv));
 
-        $inv->update(['kyc_status' => 'rejected', 'kyc_verified' => false]);
+        $inv->forceFill(['kyc_status' => 'rejected', 'kyc_verified' => false])->save();
         $this->engine()->evaluateUser($inv->id);
 
         $this->assertSame('gold', $this->freshRank($inv));

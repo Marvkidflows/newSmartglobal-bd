@@ -12,6 +12,7 @@ use App\Models\InvestmentAccount;
 use App\Models\InvestmentAllocation;
 use App\Models\InvestmentPlan;
 use App\Models\User;
+use App\Support\Decimal;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -20,29 +21,30 @@ class InvestmentAllocationService
     public function __construct(protected WalletLedger $ledger) {}
 
     /** @return array{0: InvestmentAccount, 1: InvestmentAllocation|null, 2: float} [position, allocation record, plan return percent] */
-    public function allocate(User $user, InvestmentPlan $plan, float $amount, ?User $actor = null): array
+    public function allocate(User $user, InvestmentPlan $plan, string|int|float $amount, ?User $actor = null): array
     {
         return DB::transaction(function () use ($user, $plan, $amount, $actor) {
+            $amount = Decimal::money($amount);   // exact 2-decimal string from here on; no float is compared, multiplied or sent to SQL
             $u = User::whereKey($user->id)->lockForUpdate()->first();
-            if ((float) $u->balance < $amount) {
+            if (Decimal::lt(Decimal::money($u->balance), $amount)) {
                 throw ValidationException::withMessages(['amount' => ['Insufficient balance. Please make a deposit first.']]);
             }
-            if ($amount < (float) $plan->min_amount) throw ValidationException::withMessages(['amount' => ['Amount is below the minimum for this plan.']]);
-            if ($plan->max_amount && $amount > (float) $plan->max_amount) throw ValidationException::withMessages(['amount' => ['Amount exceeds the maximum for this plan.']]);
+            if (Decimal::lt($amount, Decimal::money($plan->min_amount))) throw ValidationException::withMessages(['amount' => ['Amount is below the minimum for this plan.']]);
+            if ($plan->max_amount && Decimal::gt($amount, Decimal::money($plan->max_amount))) throw ValidationException::withMessages(['amount' => ['Amount exceeds the maximum for this plan.']]);
 
             $durationDays   = $plan->duration_days ?? (($plan->duration_months ?? 1) * 30);
             $profitPercent  = $plan->profit_percentage ?? $plan->profit_percent ?? 0;
-            $expectedProfit = $amount * ($profitPercent / 100);
+            $expectedProfit = Decimal::percentOf($amount, Decimal::fromInput($profitPercent));   // exact, half-up at 2 dp
 
             $position = InvestmentAccount::create([
                 'user_id' => $u->id, 'investment_plan_id' => $plan->id, 'amount' => $amount, 'profit_percentage' => $profitPercent,
-                'expected_profit' => $expectedProfit, 'total_return' => $amount + $expectedProfit, 'status' => 'active',
+                'expected_profit' => $expectedProfit, 'total_return' => Decimal::add($amount, $expectedProfit), 'status' => 'active',
                 'start_date' => now(), 'end_date' => now()->addDays($durationDays), 'remaining_days' => $durationDays,
             ]);
 
             $before = (float) $u->balance;
             $u->decrement('balance', $amount);
-            $after = (float) $u->fresh()->balance;
+            $after = Decimal::money($u->fresh()->balance);
 
             $group = $this->ledger->newGroup();
             $alloc = null;

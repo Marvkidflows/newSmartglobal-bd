@@ -13,6 +13,8 @@ class User extends Authenticatable
 {
     use HasApiTokens, HasFactory, Notifiable;
 
+    // F-12 (audit 2 Nov 2026): 'role', 'status', 'balance' and 'withdrawal_pin' are deliberately NOT mass-assignable, so request data can never
+    // change privilege, account state, wallet or PIN. Server code that legitimately sets them uses forceFill()/User::unguarded()/property assignment.
     protected $fillable = [
         'name',
         'full_name',
@@ -20,8 +22,6 @@ class User extends Authenticatable
         'last_name',
         'email',
         'password',
-        'role',
-        'status',
         'phone',
         'country_code',
         'country',
@@ -33,7 +33,6 @@ class User extends Authenticatable
         'state',
         'postal_code',
         'date_of_birth',
-        'balance',
         'referral_code',
         'referred_by',
         'registration_stage',
@@ -44,19 +43,16 @@ class User extends Authenticatable
         'investment_experience',
         'risk_tolerance',
         'investment_objectives',
-        'withdrawal_pin',
         'two_factor_enabled',
         'profile_photo',
         'avatar',
         'last_login_at',
-        // KYC
+        // KYC document references only. kyc_status / kyc_verified / kyc_verified_at are NOT mass-assignable (R2/F12 follow-up):
+        // verification state is written only by explicit forceFill() in AdminKycController / the investor KYC submission.
         'id_type',
         'id_number',
         'id_document_path',
         'selfie_path',
-        'kyc_status',
-        'kyc_verified',
-        'kyc_verified_at',
         'kyc_rejection_reason',
     ];
 
@@ -76,6 +72,7 @@ class User extends Authenticatable
         'kyc_verified'            => 'boolean',
         'kyc_verified_at'         => 'datetime',
         'rank_changed_at'         => 'datetime',
+        'privacy_policy_acknowledged_at' => 'datetime',
     ];
 
     // ── RELATIONSHIPS ──────────────────────────────────────────────────────
@@ -171,6 +168,12 @@ public function sendPasswordResetNotification($token)
         return $this->hasMany(User::class, 'referred_by');
     }
 
+    // Registration Team (Task 2) — the onboarding/KYC review record for this applicant.
+    public function registrationApplication()
+    {
+        return $this->hasOne(RegistrationApplication::class);
+    }
+
     // MarvFlow Team Dashboard — requests currently assigned to this
     // MarvFlow team member.
     public function assignedTeamRequests()
@@ -213,6 +216,12 @@ public function sendPasswordResetNotification($token)
     public function isMarvflow(): bool
     {
         return $this->isMarvflowMember() || $this->isMarvflowLead();
+    }
+
+    // Registration Team (Task 2): onboarding / KYC review staff. Not admin- or financial-equivalent.
+    public function isRegistrationTeam(): bool
+    {
+        return in_array($this->role, ['registration_member', 'registration_lead'], true);
     }
 
     public function isActive(): bool

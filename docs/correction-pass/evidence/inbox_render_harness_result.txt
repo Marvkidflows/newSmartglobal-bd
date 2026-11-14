@@ -1,0 +1,23 @@
+transformed 133 files
+PASS eligible approver sees Approve and Reject, the before/after table, reference, requester, reason and audit history
+PASS SELF-APPROVAL/REJECTION: the requester sees no Approve/Reject, sees the explanation, and can Cancel
+PASS UNAUTHORISED ROLE: no decision buttons and the role explanation is shown
+PASS FAILED execution: red banner with the server reason, attempts, Retry shown, Approve hidden
+PASS FAILED request viewed by its own requester: no Retry (self), explanation shown
+PASS STUCK (legacy approved / interrupted): banner + recovery instruction, no action buttons
+PASS MANUAL-VERIFICATION request: no Retry, explicit explanation, banner with the recovery text
+PASS EXECUTED: shows executed after-values from the result, no action buttons, no "(proposed)"
+PASS CANCELLED shows the cancellation reason; REJECTED shows the decision note
+PASS BALANCE adjustment shows live and projected wallet balance
+PASS EXPIRED pending request is shown as expired with no decision buttons
+PASS LIST: rows show type, change summary, requester, "you" marker, and Review vs View per permission
+PASS LIST: empty state
+
+13 passed, 0 failed
+PASS Inbox page: heading, explanation and every filter (status, type, requester, date range) are present
+PASS Global Management page: profit form now has the Authorization reference field, the 10-char reason hint and "Submit for Approval" (R4)
+PASS Global Management page: bulk balance buttons no longer imply immediate execution
+PASS Global Management page: history card renders (loading state) with the new Status column on first paint
+PASS NEGATIVE CONTROL: a string that is not rendered is reported missing
+
+5 passed

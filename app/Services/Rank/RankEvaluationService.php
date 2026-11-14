@@ -256,10 +256,12 @@ class RankEvaluationService
             return;
         }
 
-        $fingerprint = $this->fingerprint($user->investor_rank_id, $criterion, $failed);
-
-        if (RankDowngradeReview::where('investor_id', $user->id)->where('fingerprint', $fingerprint)->exists()) {
-            return; // same unchanged shortfall already raised (open OR already decided) → no repeat alert
+        // One review per EPISODE of a shortfall (see currentEpisode()): an open or already DECIDED review for the same unchanged shortfall means it
+        // has been handled → no repeat alert; a CLEARED one means the investor qualified again in between, so the same shortfall coming back is a
+        // new episode and must reach staff again.
+        [$fingerprint, $existing] = $this->currentEpisode((int) $user->id, $this->fingerprint($user->investor_rank_id, $criterion, $failed));
+        if ($existing) {
+            return;
         }
 
         try {
@@ -285,6 +287,25 @@ class RankEvaluationService
         );
     }
 
+    /**
+     * The fingerprint of the CURRENT episode of a shortfall, and its review (null when this episode has none yet). Episode 0 keeps the original
+     * fingerprint, so every existing row is unchanged. A review that was CLEARED (the investor met the requirements again, e.g. a stale currency
+     * valuation was re-verified) closes its episode; the same shortfall returning later starts the next one, with its own review and one alert.
+     * Open and decided reviews keep their episode: the same unchanged shortfall never raises a second alert.
+     *
+     * @return array{0:string,1:?RankDowngradeReview}
+     */
+    protected function currentEpisode(int $userId, string $base): array
+    {
+        for ($episode = 0; ; $episode++) {
+            $fingerprint = $episode === 0 ? $base : sha1($base . '|episode:' . $episode);
+            $existing = RankDowngradeReview::where('investor_id', $userId)->where('fingerprint', $fingerprint)->first();
+            if (!$existing || $existing->status !== 'cleared') {
+                return [$fingerprint, $existing];
+            }
+        }
+    }
+
     /** Identity of "this investor misses THESE requirements of THIS criterion version". */
     public function fingerprint(int $rankId, ?RankCriterion $criterion, array $failed): string
     {
@@ -301,8 +322,11 @@ class RankEvaluationService
     {
         if (!$failed) return;
 
+        [$fingerprint, $existing] = $this->currentEpisode((int) $user->id, $this->fingerprint($rankId, $criterion, $failed));
+        if ($existing) return;   // this episode is already open or decided
+
         RankDowngradeReview::firstOrCreate(
-            ['investor_id' => $user->id, 'fingerprint' => $this->fingerprint($rankId, $criterion, $failed)],
+            ['investor_id' => $user->id, 'fingerprint' => $fingerprint],
             [
                 'investor_rank_id' => $rankId, 'rank_criterion_id' => $criterion?->id ?? 0,
                 'criterion_version' => $criterion?->version ?? 0, 'failed_conditions' => $failed,

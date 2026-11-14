@@ -7,7 +7,7 @@ namespace Tests\Unit;
 
 use App\Services\EmailImageEmbedder;
 use App\Services\RichTextSanitizer;
-use PHPUnit\Framework\TestCase;
+use Tests\TestCase;
 
 class EmailImageEmbedderTest extends TestCase
 {
@@ -21,8 +21,16 @@ class EmailImageEmbedderTest extends TestCase
         };
     }
 
+    public function test_external_https_images_are_dropped_by_default_and_data_images_still_embed(): void
+    {
+        $html = (new RichTextSanitizer())->sanitizeEmail('<p>Hi <img src="https://tracker.example.com/p.gif" alt="t"> <img src="' . self::PNG . '" alt="px"></p>');
+        $this->assertStringNotContainsString('tracker.example.com', $html);
+        $this->assertStringContainsString('data:image/png;base64', $html);
+    }
+
     public function test_data_images_become_cid_parts_and_https_images_and_text_are_left_alone(): void
     {
+        config(['privacy.email_external_images' => true]);   // decision #6 opt-in
         $html = (new RichTextSanitizer())->sanitizeEmail('<p>Hi <img src="' . self::PNG . '" alt="px" width="10"> <img src="https://cdn.example.com/a.png" alt="A"></p>');
         $msg  = $this->fakeMessage();
         $out  = (new EmailImageEmbedder())->embed($html, $msg);

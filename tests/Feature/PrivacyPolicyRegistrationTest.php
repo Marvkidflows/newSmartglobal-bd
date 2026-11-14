@@ -15,11 +15,13 @@ namespace Tests\Feature;
 use App\Models\User;
 use App\Services\OtpService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\Concerns\RegistersWithEmailCode;
 use Tests\TestCase;
 
 class PrivacyPolicyRegistrationTest extends TestCase
 {
     use RefreshDatabase;
+    use RegistersWithEmailCode;   // CONTRACT CHANGE (enumeration closure): the account is created at /register/verify, after the emailed code, not at stage 1
 
     private const VERSION = 'test-version-1';
     private const EMAIL   = 'privacy.tester@example.com';
@@ -94,8 +96,7 @@ class PrivacyPolicyRegistrationTest extends TestCase
     {
         $this->requireAcknowledgement(false);
 
-        $this->postJson('/api/register/stage1', $this->stage1Payload)
-            ->assertOk()->assertJson(['success' => true]);
+        $this->registerViaCode($this->stage1Payload)->assertOk()->assertJson(['success' => true]);
 
         $user = User::where('email', self::EMAIL)->firstOrFail();
         $this->assertNull($user->privacy_policy_version);
@@ -106,7 +107,7 @@ class PrivacyPolicyRegistrationTest extends TestCase
     {
         $this->requireAcknowledgement(false);
 
-        $this->postJson('/api/register/stage1', $this->ack())->assertOk();
+        $this->registerViaCode($this->ack())->assertOk();
 
         $user = User::where('email', self::EMAIL)->firstOrFail();
         $this->assertSame(self::VERSION, $user->privacy_policy_version);
@@ -182,8 +183,7 @@ class PrivacyPolicyRegistrationTest extends TestCase
     {
         $this->requireAcknowledgement(true);
 
-        $this->postJson('/api/register/stage1', $this->ack())
-            ->assertOk()->assertJson(['success' => true]);
+        $this->registerViaCode($this->ack())->assertOk()->assertJson(['success' => true]);
 
         $user = User::where('email', self::EMAIL)->firstOrFail();
         $this->assertSame(self::VERSION, $user->privacy_policy_version);
@@ -192,16 +192,26 @@ class PrivacyPolicyRegistrationTest extends TestCase
 
     // ── Resume + safety ─────────────────────────────────────────────────────
 
-    public function test_resuming_an_incomplete_registration_records_the_acknowledgement(): void
+    public function test_resuming_an_incomplete_registration_records_the_acknowledgement_only_after_ownership_is_proven(): void
     {
-        // First attempt (e.g. before this feature, or abandoned)
+        // SECURITY CORRECTION (Task 2): this test used to assert that an UNAUTHENTICATED second stage-1 request wrote the acknowledgement
+        // into the existing account. That was the account-takeover path. The acknowledgement is now recorded only once the caller has proven
+        // control of the mailbox with the emailed one-time code.
+        // First attempt (e.g. abandoned after stage 1): the account now exists only because its owner proved the mailbox.
         $this->requireAcknowledgement(false);
-        $this->postJson('/api/register/stage1', $this->stage1Payload)->assertOk();
+        $this->registerViaCode($this->stage1Payload)->assertOk();
         $this->assertNull(User::where('email', self::EMAIL)->first()->privacy_policy_version);
 
-        // Same email returns, now with acknowledgement
+        // Same email returns, now with acknowledgement, but has not proven ownership yet
         $this->requireAcknowledgement(true);
-        $this->postJson('/api/register/stage1', $this->ack())->assertOk();
+        $this->stage1($this->ack())
+            ->assertOk()->assertJson(['verification_required' => true])->assertJsonMissingPath('token');
+        $this->assertNull(User::where('email', self::EMAIL)->first()->privacy_policy_version, 'unauthenticated request must not write to the account');
+
+        $code = $this->emailedCode();
+        $this->assertNotNull($code);
+
+        $this->postJson('/api/register/resume/verify', $this->ack(['code' => $code]))->assertOk();
 
         $this->assertSame(self::VERSION, User::where('email', self::EMAIL)->first()->privacy_policy_version);
         $this->assertSame(1, User::where('email', self::EMAIL)->count());

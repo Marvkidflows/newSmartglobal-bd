@@ -23,6 +23,12 @@ class Withdrawal extends Model
         'amount'       => 'decimal:2',
         'processed_at' => 'datetime',
         'held_at'      => 'datetime',
+        // Task 5 (additive): withdrawal-fee disclosure frozen at submission. None of these are mass-assignable ($fillable is unchanged).
+        'gross_amount'     => 'decimal:2',
+        'fee_amount'       => 'decimal:2',
+        'net_amount'       => 'decimal:2',
+        'fee_calculation'  => 'array',
+        'fee_confirmed_at' => 'datetime',
     ];
 
     // ── RELATIONSHIPS ──────────────────────────────────────────────────────

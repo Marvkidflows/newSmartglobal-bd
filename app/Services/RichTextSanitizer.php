@@ -298,6 +298,9 @@ class RichTextSanitizer
                 && preg_match('#^data:image/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/]++={0,2}$#', $src) === 1;
         }
 
+        // Management decision #6: an https image is fetched from a THIRD-PARTY host when the email is opened (tracking pixel / open + IP disclosure).
+        // Until Management approves it, external images are dropped and only embedded raster data: images survive. Opt in: PRIVACY_EMAIL_EXTERNAL_IMAGES=true.
+        if (!$this->externalImagesAllowed()) return false;
         if (strlen($src) > 2048) return false;
         if (preg_match('/[\x00-\x20\x7F<>"\'`\\\\]/', $src) !== 0) return false;
         return preg_match('#^https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:\d{1,5})?([/?\#]|$)#i', $src) === 1;
@@ -322,5 +325,15 @@ class RichTextSanitizer
         // Fail CLOSED: `!== 0` is also true when preg_match errors (returns false) — an unsafe link is never kept.
         if (preg_match('/[\x00-\x20\x7F<>"\'`\\\\]/', $href) !== 0) return false;
         return preg_match('#^(https?://[^/]|mailto:[^@\s]+@)#i', $href) === 1;
+    }
+
+    /** Container-safe (the sanitizer is also used in plain unit tests with no booted app): fail CLOSED when config is unavailable. */
+    protected function externalImagesAllowed(): bool
+    {
+        try {
+            return \Illuminate\Container\Container::getInstance()->bound('config') && (bool) config('privacy.email_external_images', false);
+        } catch (\Throwable $e) {
+            return false;
+        }
     }
 }

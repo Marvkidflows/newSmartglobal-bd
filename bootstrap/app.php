@@ -26,6 +26,8 @@ return Application::configure(basePath: dirname(__DIR__))
             'investor'            => \App\Http\Middleware\InvestorMiddleware::class,
             'registration.stage'  => \App\Http\Middleware\RegistrationStageMiddleware::class,
             'check.account'       => \App\Http\Middleware\CheckAccountStatus::class,
+            'staff.active'        => \App\Http\Middleware\EnsureStaffAccountActive::class,
+            'registration.team'   => \App\Http\Middleware\RegistrationTeamMiddleware::class,
         ]);
 
         // Role gates must run BEFORE implicit route-model binding. Custom
@@ -42,6 +44,7 @@ return Application::configure(basePath: dirname(__DIR__))
             \App\Http\Middleware\MarvflowMiddleware::class,
             \App\Http\Middleware\MarvflowLeadMiddleware::class,
             \App\Http\Middleware\InvestorMiddleware::class,
+            \App\Http\Middleware\RegistrationTeamMiddleware::class,
         ] as $roleGate) {
             $middleware->prependToPriorityList(
                 \Illuminate\Routing\Middleware\SubstituteBindings::class,

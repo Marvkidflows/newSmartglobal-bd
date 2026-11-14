@@ -134,6 +134,7 @@ class EmailCenterSanitizationTest extends TestCase
     public function test_legitimate_email_content_survives_the_whole_round_trip(): void
     {
         Mail::fake();
+        config(['privacy.email_external_images' => true]);   // Management decision #6: external images are opt-in; this test covers the opted-in path
         $html = '<h2>Statement</h2><table width="100%" cellpadding="6" border="1"><tr><th align="left">Plan</th><td colspan="1" style="padding:8px">A</td></tr></table><hr>'
               . '<p><img src="https://cdn.example.com/logo.png" alt="Logo" width="120"> <img src="' . self::PNG . '" alt="px"></p><ul><li class="ql-indent-1">x</li></ul>'
               . '<p style="font-family:Georgia;font-size:18px;text-align:center;line-height:1.5">styled <a href="https://example.com">link</a></p>';

@@ -1,0 +1,15 @@
+# LOCATION: docker-compose.verify.yml — TEST environment only (isolated MySQL named *_test). Written but NOT run by the authors.
+#   docker compose -f docker-compose.verify.yml up -d db
+#   docker compose -f docker-compose.verify.yml run --rm app bash scripts/verify-all.sh
+# Logs land in ./verification-logs/ on the host. Never point this at a real database.
+services:
+  db:
+    image: mysql:8.0
+    environment: { MYSQL_ROOT_PASSWORD: root, MYSQL_DATABASE: ssi_correction_test, MYSQL_USER: ssi, MYSQL_PASSWORD: ssi }
+    healthcheck: { test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"], interval: 3s, timeout: 3s, retries: 40 }
+    tmpfs: [/var/lib/mysql]
+  app:
+    build: { context: ., dockerfile: Dockerfile.verify }
+    depends_on: { db: { condition: service_healthy } }
+    volumes: [".:/app"]
+    environment: { DB_HOST: db, DB_PORT: "3306", DB_DATABASE: ssi_correction_test, DB_USERNAME: root, DB_PASSWORD: root }

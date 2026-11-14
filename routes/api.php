@@ -48,6 +48,9 @@ use App\Http\Controllers\Admin\AdminEmailVerificationController;
 use App\Http\Controllers\Admin\AdminSectorController;
 use App\Http\Controllers\Admin\AdminGlobalManagementController;
 use App\Http\Controllers\Admin\AdminKycController;
+use App\Http\Controllers\Registration\RegistrationTrackingController;
+use App\Http\Controllers\Registration\RegistrationDashboardController;
+use App\Http\Controllers\Registration\RegistrationApplicationController;
 use App\Http\Controllers\Admin\AdminEmailController;
 use App\Http\Controllers\Admin\AdminTaskController;
 use App\Http\Controllers\Admin\AdminTaskTypeController;
@@ -86,6 +89,14 @@ use App\Http\Controllers\Financial\FinancialEmailController;
 |--------------------------------------------------------------------------
 */
 Route::post('/register/stage1', [RegisterController::class, 'submitStage1'])->middleware('throttle:10,1');
+// Task 2 security correction: resuming an unfinished registration requires the emailed one-time code (see RegistrationResumeService).
+Route::post('/register/verify',        [RegisterController::class, 'verify'])->middleware('throttle:10,1');          // prove email control, then create / resume the account
+Route::post('/register/resume/verify', [RegisterController::class, 'verify'])->middleware('throttle:10,1');          // kept for compatibility (same handler)
+// Task 5: write-only referral-link visit beacon (throttled; identical response for unknown codes).
+Route::post('/referrals/visit', [\App\Http\Controllers\PublicReferralController::class, 'visit'])->middleware('throttle:30,1');
+// Task 2 — registration tracking (public). Off unless enabled in config; stores nothing without the visitor's consent.
+Route::get('/public/registration-tracking/notice', [RegistrationTrackingController::class, 'notice'])->middleware('throttle:60,1');
+Route::post('/public/registration-tracking/visit', [RegistrationTrackingController::class, 'visit'])->middleware('throttle:30,1');
 Route::get('/privacy-policy', [\App\Http\Controllers\PrivacyPolicyController::class, 'show'])->middleware('throttle:60,1');
 Route::post('/login',           [LoginController::class, 'login'])->middleware('throttle:8,1');
 Route::post('/forgot-password', [PasswordResetController::class, 'forgotPassword'])->middleware('throttle:3,1');
@@ -130,7 +141,7 @@ Route::get('/plans', [\App\Http\Controllers\PublicPlanController::class, 'index'
 | AUTHENTICATED (Bearer token required)
 |--------------------------------------------------------------------------
 */
-Route::middleware('auth:sanctum')->group(function () {
+Route::middleware(['auth:sanctum', 'staff.active'])->group(function () {   // R9: non-active staff are refused on EVERY authenticated endpoint
 
     Route::get('/user', function (Request $request) {
         $user = $request->user();
@@ -218,7 +229,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/messages/create',    [MessageController::class, 'investorCreate'])->name('messages.create');
         Route::get('/messages/unread-count', [MessageController::class, 'investorUnreadCount'])->name('messages.unread-count');
         // 60 posts/minute per user (approved): investors can now submit formatted HTML, so unbounded posting is not acceptable.
-        Route::post('/messages',          [MessageController::class, 'investorStore'])->middleware('throttle:60,1,investor-messages')->name('messages.store');
+        Route::post('/messages',          [MessageController::class, 'investorStore'])->middleware('throttle:60,1')->name('messages.store');
         Route::get('/messages/{message}', [MessageController::class, 'investorShow'])->name('messages.show');
         
         
@@ -249,7 +260,8 @@ Route::get('/investor/deposits/{deposit}',          [InvestorDepositController::
 
         Route::get('/investor/withdrawals',        [InvestorWithdrawalController::class, 'index'])->name('withdrawals.index');
         Route::get('/investor/withdrawals/create', [InvestorWithdrawalController::class, 'create'])->name('withdrawals.create');
-        Route::post('/investor/withdrawals',       [InvestorWithdrawalController::class, 'store'])->name('withdrawals.store');
+        Route::get('/investor/withdrawals/quote',  [InvestorWithdrawalController::class, 'quote'])->middleware('throttle:60,1')->name('withdrawals.quote');   // Task 5: fee disclosure
+        Route::post('/investor/withdrawals',       [InvestorWithdrawalController::class, 'store'])->middleware('throttle:10,1')->name('withdrawals.store');
 
 
         Route::get('/investor/withdrawal-pin/status', [WithdrawalPinController::class, 'status'])->name('withdrawal-pin.status');
@@ -287,6 +299,41 @@ Route::get('/investor/deposits/{deposit}',          [InvestorDepositController::
         Route::get('/fixtures',  [\App\Http\Controllers\Investor\InvestorFixtureController::class, 'index'])->name('fixtures.index');
         Route::post('/fixtures/markets/{market}/predict', [\App\Http\Controllers\Investor\InvestorFixtureController::class, 'predict'])->name('fixtures.predict');
 
+    });
+
+    /*
+    |----------------------------------------------------------------------
+    | REGISTRATION TEAM ROUTES (Task 2)
+    |----------------------------------------------------------------------
+    | Onboarding + KYC review ONLY. Gated by 'registration.team' (registration_member, registration_lead, admin). None of these endpoints
+    | read or return balances, deposits, withdrawals, disbursements or any financial control, and the registration roles are refused by the
+    | admin / financial / investor / marvflow middleware, so those areas remain unreachable regardless of the UI.
+    */
+    Route::middleware('registration.team')
+        ->prefix('registration')
+        ->name('registration.')
+        ->group(function () {
+
+        Route::get('/dashboard',  [RegistrationDashboardController::class, 'summary'])->name('dashboard');
+        Route::get('/activity',   [RegistrationDashboardController::class, 'activity'])->name('activity');
+        Route::get('/team',       [RegistrationApplicationController::class, 'team'])->name('team');
+        Route::get('/profile',            [\App\Http\Controllers\Registration\RegistrationProfileController::class, 'show'])->name('profile.show');
+        Route::post('/profile/password',  [\App\Http\Controllers\Registration\RegistrationProfileController::class, 'changePassword'])->middleware('throttle:5,1')->name('profile.password');
+
+        Route::get('/applications/export',                         [RegistrationApplicationController::class, 'export'])->middleware('throttle:5,1')->name('applications.export');   // registered BEFORE {application}
+        Route::get('/applications',                                [RegistrationApplicationController::class, 'index'])->name('applications.index');
+        Route::get('/applications/{application}',                  [RegistrationApplicationController::class, 'show'])->whereNumber('application')->name('applications.show');
+        Route::post('/applications/{application}/status',          [RegistrationApplicationController::class, 'status'])->whereNumber('application')->middleware('throttle:60,1')->name('applications.status');
+        Route::post('/applications/{application}/notes',           [RegistrationApplicationController::class, 'note'])->whereNumber('application')->middleware('throttle:60,1')->name('applications.note');
+        Route::post('/applications/{application}/request-info',    [RegistrationApplicationController::class, 'requestInfo'])->whereNumber('application')->middleware('throttle:30,1')->name('applications.request-info');
+        Route::post('/applications/{application}/follow-up',       [RegistrationApplicationController::class, 'followUp'])->whereNumber('application')->middleware('throttle:20,1')->name('applications.follow-up');
+        Route::post('/applications/{application}/assign',          [RegistrationApplicationController::class, 'assign'])->whereNumber('application')->middleware('throttle:60,1')->name('applications.assign');
+        Route::post('/applications/{application}/follow-up-opt-out', [RegistrationApplicationController::class, 'followUpOptOut'])->whereNumber('application')->middleware('throttle:30,1')->name('applications.opt-out');
+
+        // Notifications — same shared controller/table every other role uses (Auth::user()->notifications()).
+        Route::get('/notifications',                      [NotificationController::class, 'index'])->name('notifications.index');
+        Route::post('/notifications/{notification}/read', [NotificationController::class, 'markAsRead'])->name('notifications.read');
+        Route::delete('/notifications/{notification}',    [NotificationController::class, 'destroy'])->name('notifications.destroy');
     });
 
     /*
@@ -402,7 +449,7 @@ Route::get('/investor/deposits/{deposit}',          [InvestorDepositController::
         Route::get('/marvflow-messages',               [MarvflowInboxController::class, 'index'])->defaults('inbox', 'admin')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.index');
         Route::get('/marvflow-messages/unread-count',  [MarvflowInboxController::class, 'unreadCount'])->defaults('inbox', 'admin')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.unread');
         Route::get('/marvflow-messages/{id}',          [MarvflowInboxController::class, 'show'])->whereNumber('id')->defaults('inbox', 'admin')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.show');
-        Route::post('/marvflow-messages/{id}/reply',   [MarvflowInboxController::class, 'reply'])->whereNumber('id')->defaults('inbox', 'admin')->middleware('throttle:30,1,mfm-ssi-reply-admin')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.reply');
+        Route::post('/marvflow-messages/{id}/reply',   [MarvflowInboxController::class, 'reply'])->whereNumber('id')->defaults('inbox', 'admin')->middleware('throttle:30,1')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.reply');
 
         // Admin <-> Financial shared channel — one conversation, both
         // sides post and read the same thread.
@@ -431,6 +478,9 @@ Route::post('/users/{user}/deactivate', [AdminUserController::class, 'deactivate
      Route::post('/global/profit-adjustments', [AdminGlobalManagementController::class, 'adjustProfit'])->name('global.profit-adjust');
 Route::get('/global/profit-adjustments',  [AdminGlobalManagementController::class, 'profitAdjustmentHistory'])->name('global.profit-history');
 Route::post('/global/balance-bulk',       [AdminGlobalManagementController::class, 'bulkBalance'])->name('global.balance-bulk');
+        // F-04: per-investment before/after record + reversal (second approval applies)
+        Route::get('/global/profit-adjustments/{adjustment}/items',    [AdminGlobalManagementController::class, 'profitAdjustmentItems'])->whereNumber('adjustment')->name('global.profit-items');
+        Route::post('/global/profit-adjustments/{adjustment}/reverse', [AdminGlobalManagementController::class, 'reverseProfit'])->whereNumber('adjustment')->name('global.profit-reverse');
  
 
         Route::resource('investment-plans', AdminInvestmentPlanController::class);
@@ -658,7 +708,7 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         Route::get('/marvflow-messages',               [MarvflowInboxController::class, 'index'])->defaults('inbox', 'financial')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.index');
         Route::get('/marvflow-messages/unread-count',  [MarvflowInboxController::class, 'unreadCount'])->defaults('inbox', 'financial')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.unread');
         Route::get('/marvflow-messages/{id}',          [MarvflowInboxController::class, 'show'])->whereNumber('id')->defaults('inbox', 'financial')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.show');
-        Route::post('/marvflow-messages/{id}/reply',   [MarvflowInboxController::class, 'reply'])->whereNumber('id')->defaults('inbox', 'financial')->middleware('throttle:30,1,mfm-ssi-reply-financial')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.reply');
+        Route::post('/marvflow-messages/{id}/reply',   [MarvflowInboxController::class, 'reply'])->whereNumber('id')->defaults('inbox', 'financial')->middleware('throttle:30,1')->middleware(EnsureMessagingAccountActive::class)->name('marvflow-messages.reply');
 
         // Admin <-> Financial shared channel — same table/controller as
         // the admin side; one shared conversation, not per-user threads.
@@ -738,6 +788,14 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         Route::get('/investors/{user}',           [FinancialInvestorController::class, 'show'])->name('investors.show');
         Route::post('/investors/{user}/balance',  [FinancialInvestorController::class, 'adjustBalance'])->name('investors.balance');
 
+        // F-03/F-04/F-14: second-approval inbox. Reachable by financial + admin roles; the service enforces approver != requester and per-operation roles.
+        Route::get('/approvals',                  [\App\Http\Controllers\Financial\FinancialApprovalController::class, 'index'])->name('approvals.index');
+        Route::post('/approvals/{id}/approve',    [\App\Http\Controllers\Financial\FinancialApprovalController::class, 'approve'])->whereNumber('id')->middleware('throttle:30,1')->name('approvals.approve');
+        Route::post('/approvals/{id}/reject',     [\App\Http\Controllers\Financial\FinancialApprovalController::class, 'reject'])->whereNumber('id')->middleware('throttle:30,1')->name('approvals.reject');
+        Route::get('/approvals/{id}',             [\App\Http\Controllers\Financial\FinancialApprovalController::class, 'show'])->whereNumber('id')->name('approvals.show');
+        Route::post('/approvals/{id}/retry',      [\App\Http\Controllers\Financial\FinancialApprovalController::class, 'retry'])->whereNumber('id')->middleware('throttle:30,1')->name('approvals.retry');
+        Route::post('/approvals/{id}/cancel',     [\App\Http\Controllers\Financial\FinancialApprovalController::class, 'cancel'])->whereNumber('id')->middleware('throttle:30,1')->name('approvals.cancel');
+
         // Controlled, audited correction of an investment RECORD (amount /
         // ROI %). Countdown / end-date / completion controls remain admin-only
         // and are deliberately not routed here.
@@ -754,6 +812,36 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         Route::get('/transactions/{type}/{id}',      [FinancialTransactionController::class, 'show'])
             ->whereIn('type', ['deposit', 'withdrawal', 'investment', 'adjustment'])->whereNumber('id')->name('transactions.show');
         Route::get('/audit-logs',                    [FinancialTransactionController::class, 'auditLogs'])->name('audit-logs.index');
+
+        // Task 5: referral bonus management + withdrawal fee configuration. Each action re-checks its Gate inside the controller (financial.* abilities);
+        // approving a policy as Management-approved and reversing a credited reward are Administrator-only inside the service/gate.
+        Route::prefix('referrals')->name('referrals.')->group(function () {
+            $c = \App\Http\Controllers\Financial\FinancialReferralController::class;
+            Route::get('/summary',               [$c, 'summary'])->name('summary');
+            Route::get('/',                      [$c, 'index'])->name('index');
+            Route::get('/{reward}',              [$c, 'show'])->whereNumber('reward')->name('show');
+            Route::post('/{reward}/evaluate',    [$c, 'evaluate'])->whereNumber('reward')->middleware('throttle:60,1')->name('evaluate');
+            Route::post('/{reward}/approve',     [$c, 'approve'])->whereNumber('reward')->middleware('throttle:30,1')->name('approve');
+            Route::post('/{reward}/reject',      [$c, 'reject'])->whereNumber('reward')->middleware('throttle:30,1')->name('reject');
+            Route::post('/{reward}/credit',      [$c, 'credit'])->whereNumber('reward')->middleware('throttle:20,1')->name('credit');
+            Route::post('/{reward}/reverse',     [$c, 'reverse'])->whereNumber('reward')->middleware('throttle:10,1')->name('reverse');
+            Route::post('/{reward}/flag',        [$c, 'flag'])->whereNumber('reward')->middleware('throttle:30,1')->name('flag');
+            Route::post('/{reward}/unflag',      [$c, 'unflag'])->whereNumber('reward')->middleware('throttle:30,1')->name('unflag');
+        });
+        Route::get('/referrals-export', [\App\Http\Controllers\Financial\FinancialReferralController::class, 'export'])->middleware('throttle:10,1')->name('referrals.export');
+        Route::get('/referral-policy',  [\App\Http\Controllers\Financial\FinancialReferralController::class, 'policy'])->name('referral-policy.show');
+        Route::post('/referral-policy', [\App\Http\Controllers\Financial\FinancialReferralController::class, 'savePolicy'])->middleware('throttle:10,1')->name('referral-policy.save');
+
+        Route::prefix('withdrawal-fees')->name('withdrawal-fees.')->group(function () {
+            $c = \App\Http\Controllers\Financial\FinancialWithdrawalFeeController::class;
+            Route::get('/policy',                                   [$c, 'policy'])->name('policy');
+            Route::post('/policy',                                  [$c, 'savePolicy'])->middleware('throttle:10,1')->name('policy.save');
+            Route::get('/summary',                                  [$c, 'summary'])->name('summary');
+            Route::get('/reconciliation',                           [$c, 'reconciliation'])->name('reconciliation');
+            Route::get('/withdrawals',                              [$c, 'withdrawals'])->name('withdrawals');
+            Route::get('/withdrawals/{withdrawal}/events',          [$c, 'events'])->whereNumber('withdrawal')->name('events');
+            Route::post('/withdrawals/{withdrawal}/adjust',         [$c, 'adjust'])->whereNumber('withdrawal')->middleware('throttle:20,1')->name('adjust');
+        });
 
         // Financial Team mailbox — extends the existing messages table.
         // Static paths are declared before the {investor} ones.
@@ -849,10 +937,10 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         Route::get('/messages/recipients',     [MarvflowMessageController::class, 'recipients'])->middleware(EnsureMessagingAccountActive::class)->name('messages.recipients');
         Route::get('/messages/unread-count',   [MarvflowMessageController::class, 'unreadCount'])->middleware(EnsureMessagingAccountActive::class)->name('messages.unread-count');
         Route::get('/messages',                [MarvflowMessageController::class, 'index'])->middleware(EnsureMessagingAccountActive::class)->name('messages.index');
-        Route::post('/messages',               [MarvflowMessageController::class, 'store'])->middleware('throttle:20,1,mfm-email')->middleware(EnsureMessagingAccountActive::class)->name('messages.store');
-        Route::post('/messages/direct',        [MarvflowMessageController::class, 'storeDirect'])->middleware('throttle:30,1,mfm-quick')->middleware(EnsureMessagingAccountActive::class)->name('messages.direct');
+        Route::post('/messages',               [MarvflowMessageController::class, 'store'])->middleware('throttle:20,1')->middleware(EnsureMessagingAccountActive::class)->name('messages.store');
+        Route::post('/messages/direct',        [MarvflowMessageController::class, 'storeDirect'])->middleware('throttle:30,1')->middleware(EnsureMessagingAccountActive::class)->name('messages.direct');
         Route::get('/messages/{id}',           [MarvflowMessageController::class, 'show'])->whereNumber('id')->middleware(EnsureMessagingAccountActive::class)->name('messages.show');
-        Route::post('/messages/{id}/reply',    [MarvflowMessageController::class, 'reply'])->whereNumber('id')->middleware('throttle:30,1,mfm-reply')->middleware(EnsureMessagingAccountActive::class)->name('messages.reply');
+        Route::post('/messages/{id}/reply',    [MarvflowMessageController::class, 'reply'])->whereNumber('id')->middleware('throttle:30,1')->middleware(EnsureMessagingAccountActive::class)->name('messages.reply');
         Route::post('/requests/{id}/assign',   [MarvflowRequestController::class, 'assign'])->name('requests.assign');
 
         Route::middleware('marvflow.lead')->group(function () {
@@ -871,3 +959,9 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         Route::post('/profile/password', [MarvflowProfileController::class, 'changePassword'])->name('profile.password');
     });
 });
+
+// TASK 3 — Mailing module (General Public / Investor mailing). Self-contained route file.
+require __DIR__ . '/mailing.php';
+
+// TASK 4 — News & Media module. Self-contained route file.
+require __DIR__ . '/news.php';

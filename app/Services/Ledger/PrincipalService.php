@@ -23,6 +23,7 @@ use App\Models\User;
 use App\Models\Withdrawal;
 use App\Models\WithdrawalComponent;
 use App\Services\Rank\RankBenefitService;
+use App\Support\Decimal;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -35,10 +36,18 @@ class PrincipalService
         return (bool) config('financial.ledger_enabled') && LedgerReaders::has('principal_movements');
     }
 
+    /** Principal remaining, as a float for display/back-compat. Money decisions use remainingDecimal(). */
     public function remaining(InvestmentAccount $i): float
     {
-        $reduced = LedgerReaders::reductions([(int) $i->id])[(int) $i->id] ?? 0.0;
-        return max(0.0, round((float) $i->amount - $reduced, 2));
+        return (float) $this->remainingDecimal($i);
+    }
+
+    /** Principal remaining in the position, EXACT (2-decimal string, never below zero). */
+    public function remainingDecimal(InvestmentAccount $i): string
+    {
+        $reduced = LedgerReaders::reductionsDecimal([(int) $i->id])[(int) $i->id] ?? '0.00';
+        $left = Decimal::sub(Decimal::money($i->amount), $reduced);
+        return Decimal::isNegative($left) ? '0.00' : Decimal::roundSigned($left, 2);
     }
 
     // ── steps ───────────────────────────────────────────────────────────────────────────────────────────
@@ -53,14 +62,14 @@ class PrincipalService
             $key = "release:{$i->id}";
             if ($m = PrincipalMovement::where('source_key', $key)->first()) return $m;   // idempotent
 
-            $m = $this->movement($i, 'release', $this->remaining($i), 'redemption', null, $key, $actor, null, $note);
+            $m = $this->movement($i, 'release', $this->remainingDecimal($i), 'redemption', null, $key, $actor, null, $note);
             $this->audit->audit('principal', $m->id, 'principal_released', $actor, null, ['investment_id' => $i->id, 'amount' => $m->amount], $note);
             return $m;
         });
     }
 
     /** Principal credited back to the investor's wallet through a linked principal-return transaction; reduces the position. */
-    public function returnToWallet(InvestmentAccount $position, float $amount, string $idempotencyKey, string $reference, string $evidence, User $actor, ?int $withdrawalId = null): PrincipalMovement
+    public function returnToWallet(InvestmentAccount $position, string|int|float $amount, string $idempotencyKey, string $reference, string $evidence, User $actor, ?int $withdrawalId = null): PrincipalMovement
     {
         $this->assertEnabled();
         return DB::transaction(function () use ($position, $amount, $idempotencyKey, $reference, $evidence, $actor, $withdrawalId) {
@@ -68,15 +77,16 @@ class PrincipalService
             $key = "redemption:{$idempotencyKey}:{$i->id}:return_to_wallet";
             if ($m = PrincipalMovement::where('source_key', $key)->first()) return $m;   // a retry returns the original, never a second credit
 
+            $amount = Decimal::money($amount);   // exact 2-decimal string; no float reaches SQL or the ledger
             $this->assertAmount($i, $amount);
             $this->assertReleasedIfCompleted($i);
             $this->assertEvidence($reference, $evidence);
             $this->assertNotAlreadyDeducted($withdrawalId, $i);
 
             $u = User::whereKey($i->user_id)->lockForUpdate()->first();
-            $before = (float) $u->balance;
+            $before = Decimal::money($u->balance);
             $u->increment('balance', $amount);
-            $after = (float) $u->fresh()->balance;
+            $after = Decimal::money($u->fresh()->balance);
             BalanceAdjustment::create(['user_id' => $u->id, 'admin_id' => $actor->id, 'type' => 'add', 'amount' => $amount, 'balance_before' => $before, 'balance_after' => $after,
                 'reason' => "Principal returned from investment #{$i->id} ({$reference})"]);
 
@@ -87,13 +97,13 @@ class PrincipalService
             $this->ledger->record(['entry_group' => $group, 'entry_key' => "pm:{$m->id}:position", 'user_id' => $u->id, 'classification' => 'allocated_investment_principal', 'direction' => 'debit',
                 'amount' => $amount, 'investment_id' => $i->id, 'principal_movement_id' => $m->id, 'reference' => $reference, 'actor_id' => $actor->id, 'actor_name' => $actor->name ?? 'Staff',
                 'note' => 'Principal removed from the position (linked to the wallet credit)']);
-            $this->audit->audit('principal', $m->id, 'principal_returned_to_wallet', $actor, ['remaining' => $this->remaining($i) + $amount], ['remaining' => $this->remaining($i), 'amount' => $amount], $evidence);
+            $this->audit->audit('principal', $m->id, 'principal_returned_to_wallet', $actor, ['remaining' => (float) Decimal::add($this->remainingDecimal($i), $amount)], ['remaining' => $this->remaining($i), 'amount' => (float) $amount], $evidence);
             return $m;
         });
     }
 
     /** A verified EXTERNAL payout of principal. No wallet movement. Reduces the position. */
-    public function externalPayout(InvestmentAccount $position, float $amount, string $idempotencyKey, string $reference, string $evidence, User $actor, ?int $withdrawalId = null): PrincipalMovement
+    public function externalPayout(InvestmentAccount $position, string|int|float $amount, string $idempotencyKey, string $reference, string $evidence, User $actor, ?int $withdrawalId = null): PrincipalMovement
     {
         $this->assertEnabled();
         return DB::transaction(function () use ($position, $amount, $idempotencyKey, $reference, $evidence, $actor, $withdrawalId) {
@@ -101,6 +111,7 @@ class PrincipalService
             $key = "redemption:{$idempotencyKey}:{$i->id}:external_payout";
             if ($m = PrincipalMovement::where('source_key', $key)->first()) return $m;
 
+            $amount = Decimal::money($amount);
             $this->assertAmount($i, $amount);
             $this->assertReleasedIfCompleted($i);
             $this->assertEvidence($reference, $evidence);
@@ -111,7 +122,7 @@ class PrincipalService
             $this->ledger->record(['entry_group' => $group, 'entry_key' => "pm:{$m->id}:payout", 'user_id' => $i->user_id, 'classification' => 'principal_paid_externally', 'direction' => 'debit',
                 'amount' => $amount, 'investment_id' => $i->id, 'principal_movement_id' => $m->id, 'reference' => $reference, 'actor_id' => $actor->id, 'actor_name' => $actor->name ?? 'Staff',
                 'note' => 'Verified external payout of principal (no wallet movement)']);
-            $this->audit->audit('principal', $m->id, 'principal_paid_externally', $actor, ['remaining' => $this->remaining($i) + $amount], ['remaining' => $this->remaining($i), 'amount' => $amount], $evidence);
+            $this->audit->audit('principal', $m->id, 'principal_paid_externally', $actor, ['remaining' => (float) Decimal::add($this->remainingDecimal($i), $amount)], ['remaining' => $this->remaining($i), 'amount' => (float) $amount], $evidence);
             return $m;
         });
     }
@@ -135,37 +146,38 @@ class PrincipalService
             $key = "withdrawal:{$w->id}:investment:{$i->id}:principal";
             if (PrincipalMovement::where('source_key', $key)->exists()) continue;           // idempotent
 
-            $amount = (float) $c->amount;
+            $amount = Decimal::money($c->amount);
             $this->assertAmount($i, $amount);
             $m = $this->movement($i, 'withdrawal_principal', $amount, 'withdrawal', (int) $w->id, $key, $actor, null, "Principal component of approved withdrawal #{$w->id}", "WD-{$w->id}", $w->id, true);
-            $this->audit->audit('principal', $m->id, 'withdrawal_principal_applied', $actor, ['remaining' => $this->remaining($i) + $amount], ['remaining' => $this->remaining($i), 'amount' => $amount, 'withdrawal_id' => $w->id], null);
+            $this->audit->audit('principal', $m->id, 'withdrawal_principal_applied', $actor, ['remaining' => (float) Decimal::add($this->remainingDecimal($i), $amount)], ['remaining' => $this->remaining($i), 'amount' => (float) $amount, 'withdrawal_id' => $w->id], null);
             $applied++;
         }
         return $applied;
     }
 
     /** A signed, approved adjustment (positive reduces principal, negative restores). Needs evidence and an approval reference. */
-    public function correct(InvestmentAccount $position, float $signedAmount, string $idempotencyKey, string $approvalReference, string $evidence, User $actor): PrincipalMovement
+    public function correct(InvestmentAccount $position, string|int|float $signedAmount, string $idempotencyKey, string $approvalReference, string $evidence, User $actor): PrincipalMovement
     {
         $this->assertEnabled();
         return DB::transaction(function () use ($position, $signedAmount, $idempotencyKey, $approvalReference, $evidence, $actor) {
             $i = InvestmentAccount::whereKey($position->id)->lockForUpdate()->firstOrFail();
             $key = "correction:{$idempotencyKey}:{$i->id}";
             if ($m = PrincipalMovement::where('source_key', $key)->first()) return $m;
-            if (abs($signedAmount) < 0.01) $this->fail('A correction needs a non-zero amount.');
-            if ($signedAmount > 0) $this->assertAmount($i, $signedAmount);
-            elseif (abs($signedAmount) > round((float) $i->amount - $this->remaining($i), 2) + 0.0001) $this->fail('A correction cannot restore more principal than has been reduced.');
+            $signedAmount = Decimal::money($signedAmount);
+            if (Decimal::lt(Decimal::abs($signedAmount), '0.01')) $this->fail('A correction needs a non-zero amount.');
+            if (Decimal::gt($signedAmount, '0')) $this->assertAmount($i, $signedAmount);
+            elseif (Decimal::gt(Decimal::abs($signedAmount), Decimal::sub(Decimal::money($i->amount), $this->remainingDecimal($i)))) $this->fail('A correction cannot restore more principal than has been reduced.');
             if (mb_strlen(trim($approvalReference)) < 5 || mb_strlen(trim($evidence)) < 10) $this->fail('A correction needs an approval reference and the supporting evidence.');
 
             $m = $this->movement($i, 'correction', $signedAmount, 'correction', null, $key, $actor, null, $evidence, $approvalReference, verified: true);
-            $this->audit->audit('principal', $m->id, 'principal_correction', $actor, null, ['investment_id' => $i->id, 'amount' => $signedAmount], $evidence);
+            $this->audit->audit('principal', $m->id, 'principal_correction', $actor, null, ['investment_id' => $i->id, 'amount' => (float) $signedAmount], $evidence);
             return $m;
         });
     }
 
     // ── internals ───────────────────────────────────────────────────────────────────────────────────────
 
-    protected function movement(InvestmentAccount $i, string $kind, float $amount, string $sourceType, ?int $sourceId, string $key, User $actor, ?string $group, ?string $evidence, ?string $reference = null, ?int $withdrawalId = null, bool $verified = false): PrincipalMovement
+    protected function movement(InvestmentAccount $i, string $kind, string|int|float $amount, string $sourceType, ?int $sourceId, string $key, User $actor, ?string $group, ?string $evidence, ?string $reference = null, ?int $withdrawalId = null, bool $verified = false): PrincipalMovement
     {
         return PrincipalMovement::create([
             'investment_id' => $i->id, 'user_id' => $i->user_id, 'kind' => $kind, 'status' => 'completed', 'amount' => $amount,
@@ -182,10 +194,12 @@ class PrincipalService
         return $i;
     }
 
-    protected function assertAmount(InvestmentAccount $i, float $amount): void
+    protected function assertAmount(InvestmentAccount $i, string|int|float $amount): void
     {
-        if ($amount < 0.01) $this->fail('Enter the principal amount actually redeemed.');
-        if ($amount > $this->remaining($i) + 0.0001) $this->fail('The amount exceeds the principal remaining in this position (' . number_format($this->remaining($i), 2) . ').');
+        $amount = Decimal::money($amount);
+        $remaining = $this->remainingDecimal($i);
+        if (Decimal::lt($amount, '0.01')) $this->fail('Enter the principal amount actually redeemed.');
+        if (Decimal::gt($amount, $remaining)) $this->fail('The amount exceeds the principal remaining in this position (' . number_format((float) $remaining, 2) . ').');
     }
 
     /** For a completed position the principal must first have been RELEASED; completion alone is not proof of payout. */

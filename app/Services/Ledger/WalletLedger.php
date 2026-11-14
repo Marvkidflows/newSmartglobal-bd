@@ -16,6 +16,7 @@ class WalletLedger
     public const CLASSIFICATIONS = [
         'pending_deposit', 'cleared_wallet_funds', 'wallet_allocation_debit', 'allocated_investment_principal',
         'pending_withdrawal', 'completed_payout', 'principal_returned_to_wallet', 'principal_paid_externally', 'profit_credit',
+        'withdrawal_fee_collected', 'withdrawal_fee_reversed', 'referral_reward_credit',   // Task 5 (informational legs; the balance itself moves only through BalanceAdjustmentService)
     ];
 
     public function enabled(): bool

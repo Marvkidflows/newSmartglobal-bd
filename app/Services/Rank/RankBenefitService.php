@@ -194,17 +194,27 @@ class RankBenefitService
     public function notifyNextRankEligibility(RankReview $review): bool
     {
         $review->loadMissing(['investor', 'currentRank', 'proposedRank']);
-        $user = $review->investor;
-        if (!$user || ($review->currentRank?->key !== 'bronze') || ($review->proposedRank?->key !== 'silver')) return false;
-        if (!$this->enabledFor($user, ['bronze.next-rank-notice'])) return false;
+        $user = $review->investor; $from = $review->currentRank; $to = $review->proposedRank;
+        // Only a genuine step UP from a rank the investor already holds (nothing for unranked investors, same-rank or lower reviews).
+        if (!$user || !$from || !$to || $to->level <= $from->level) return false;
+
+        if ($from->key === 'bronze' && $to->key === 'silver') {
+            // Bronze → Silver stays behind the management-controlled benefit; until it is enabled the investor sees only "review in progress".
+            if (!$this->enabledFor($user, ['bronze.next-rank-notice'])) return false;
+        } else {
+            // Every other step is a platform notification (R-33), switched by ranks.progress_notices.enabled. A pending review exists only
+            // when the next rank's criteria are ACTIVE, so nothing is sent while they are inactive.
+            if (!config('ranks.progress_notices.enabled', true)) return false;
+            if (($user->rank_status ?? 'active') !== 'active') return false;
+        }
 
         $id = \Ramsey\Uuid\Uuid::uuid5(\Ramsey\Uuid\Uuid::NAMESPACE_URL, 'ssi:next-rank-notice:' . $review->id)->toString();
         if (DB::table('notifications')->where('id', $id)->exists()) return false;
 
         $user->notify(new \App\Notifications\InvestorRankNotification($id, [
-            'type' => 'rank_update', 'event' => 'next_rank_eligible', 'title' => 'You meet the Silver requirements',
-            'message' => 'You now meet the requirements for the Silver rank. Your rank will be awarded after SSI reviews and approves it.',
-            'rank' => $review->proposedRank->badge(),
+            'type' => 'rank_update', 'event' => 'next_rank_eligible', 'title' => "You meet the {$to->name} requirements",
+            'message' => "You now meet the requirements for the {$to->name} rank. Your rank will be awarded after SSI reviews and approves it.",
+            'rank' => $to->badge(), 'link' => '/investor/rank',
         ]));
         return true;
     }

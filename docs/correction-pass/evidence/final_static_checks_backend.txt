@@ -1,0 +1,13 @@
+== php structural (all PHP):
+checked 487 files, 0 problem(s)
+== helper scan (all new/changed tests):
+problems: 0
+== route resolution (new tests):
+unresolved: 3
+== override scan (non-setUp):
+1
+== entrypoint shell tests:
+PASS=16 FAIL=0
+== scripts syntax:
+ok
+composer.json ok

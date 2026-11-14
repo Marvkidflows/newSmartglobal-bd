@@ -23,7 +23,10 @@ return new class extends Migration
             $table->string('password');
 
             // ── Role & Status ─────────────────────────────────────────────
-            $table->enum('role', ['admin', 'investor', 'financial'])->default('investor');
+            // Task 2: the full role set is declared here (the project's own pattern — see 2026_09_11_120000_add_financial_role...). The later MySQL
+            // ALTER migrations only matter for databases created before a role existed; on a fresh install and on the SQLite test database this
+            // line is what decides which roles the CHECK constraint accepts. Without it SQLite rejects marvflow_* and registration_* users.
+            $table->enum('role', ['admin', 'investor', 'financial', 'marvflow_member', 'marvflow_lead', 'registration_member', 'registration_lead'])->default('investor');
             $table->enum('status', ['active', 'suspended', 'inactive'])->default('active');
 
             // ── Contact Info ──────────────────────────────────────────────

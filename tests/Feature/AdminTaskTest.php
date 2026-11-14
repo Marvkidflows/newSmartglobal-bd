@@ -296,7 +296,7 @@ class AdminTaskTest extends TestCase
 
     public function test_completing_a_profitable_task_credits_the_investors_balance(): void
     {
-        $this->investor->update(['balance' => 1000]);
+        $this->investor->forceFill(['balance' => 1000])->save();   // R2: balance is not mass-assignable (F-12)
         $assignment = $this->createTaskWithAssignment(['assignment_status' => 'submitted']);
 
         $this->actingAs($this->admin, 'sanctum')->postJson("/api/admin/tasks/{$assignment->id}/verify", [
@@ -314,9 +314,23 @@ class AdminTaskTest extends TestCase
         $this->assertNotNull($assignment->fresh()->balance_applied_at);
     }
 
+    public function test_completing_twice_credits_exactly_once_and_is_audited(): void       // R7: no stale-model double credit
+    {
+        $this->investor->forceFill(['balance' => 1000])->save();
+        $assignment = $this->createTaskWithAssignment(['assignment_status' => 'submitted']);
+        $this->actingAs($this->admin, 'sanctum')->postJson("/api/admin/tasks/{$assignment->id}/verify", ['profit_loss' => 135, 'final_result' => 'profit'])->assertStatus(200);
+
+        $this->actingAs($this->admin, 'sanctum')->postJson("/api/admin/tasks/{$assignment->id}/complete")->assertStatus(200);
+        $this->actingAs($this->admin, 'sanctum')->postJson("/api/admin/tasks/{$assignment->id}/complete")->assertStatus(422);
+
+        $this->assertEquals(1135.00, (float) $this->investor->fresh()->balance);
+        $this->assertSame(1, \App\Models\BalanceAdjustment::where('user_id', $this->investor->id)->count());
+        $this->assertSame(1, \App\Models\FinancialAuditLog::where('action', 'wallet.add')->where('investor_id', $this->investor->id)->count());
+    }
+
     public function test_completing_a_losing_task_deducts_from_the_investors_balance(): void
     {
-        $this->investor->update(['balance' => 1000]);
+        $this->investor->forceFill(['balance' => 1000])->save();   // R2: balance is not mass-assignable (F-12)
         $assignment = $this->createTaskWithAssignment(['assignment_status' => 'submitted']);
 
         $this->actingAs($this->admin, 'sanctum')->postJson("/api/admin/tasks/{$assignment->id}/verify", [
@@ -344,7 +358,7 @@ class AdminTaskTest extends TestCase
 
     public function test_complete_can_set_profit_loss_directly_without_a_prior_verify_call(): void
     {
-        $this->investor->update(['balance' => 500]);
+        $this->investor->forceFill(['balance' => 500])->save();   // R2: balance is not mass-assignable (F-12)
         $assignment = $this->createTaskWithAssignment(['assignment_status' => 'submitted']);
 
         $response = $this->actingAs($this->admin, 'sanctum')->postJson("/api/admin/tasks/{$assignment->id}/complete", [
@@ -357,7 +371,7 @@ class AdminTaskTest extends TestCase
 
     public function test_completing_a_zero_profit_loss_task_applies_no_balance_change(): void
     {
-        $this->investor->update(['balance' => 500]);
+        $this->investor->forceFill(['balance' => 500])->save();   // R2: balance is not mass-assignable (F-12)
         $assignment = $this->createTaskWithAssignment(['assignment_status' => 'submitted']);
 
         $this->actingAs($this->admin, 'sanctum')->postJson("/api/admin/tasks/{$assignment->id}/complete", [

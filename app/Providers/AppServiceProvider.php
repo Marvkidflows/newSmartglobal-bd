@@ -54,6 +54,22 @@ public function boot(): void
         Gate::define($ability, fn (User $user) => in_array($user->role, ['financial', 'admin'], true));
     }
 
+    // -- Task 5: referral rewards + withdrawal fees ------------------------------------------------------------------
+    // Same pattern as the financial.* abilities: FinancialMiddleware only says "financial/admin"; these say "may they do THIS?". The Registration Team,
+    // MarvFlow staff and investors are not 'financial'/'admin', so every one of these denies them (default deny). Declaring a policy/fee as
+    // Management-APPROVED, and reversing a credited reward, are additionally Administrator-only.
+    foreach ([
+        'financial.view-referrals',            // referral dashboard, rewards ledger, history, export
+        'financial.manage-referrals',          // review eligibility, approve, reject, credit, flag / clear flag
+        'financial.configure-referral-policy', // draft a new reward amount / eligibility criteria version (approval itself: admin, enforced in the service)
+        'financial.view-withdrawal-fees',      // fee policy, history, fee report and reconciliation
+        'financial.configure-withdrawal-fee',  // draft a new fee policy version (approval itself: admin, enforced in the service)
+        'financial.adjust-withdrawal-fee',     // reverse / waive / flag a collected fee
+    ] as $t5Ability) {
+        Gate::define($t5Ability, fn (User $user) => in_array($user->role, ['financial', 'admin'], true));
+    }
+    Gate::define('financial.reverse-referral-reward', fn (User $user) => $user->role === 'admin');   // reversal deducts money: Administrator only
+
     // ── Investor Rank & Badge module ──────────────────────────────────────
     // Admin-only. Kept as separate abilities (same pattern as financial.*) so a
     // future finer-grained split is a one-line change here. Enforced in the
@@ -93,6 +109,14 @@ public function boot(): void
     ] as $benefitAbility) {
         Gate::define($benefitAbility, fn (User $user) => $user->role === 'admin');
     }
+
+    // ── Registration Team (Task 2) ───────────────────────────────────────────
+    // Onboarding / KYC review only. Deliberately NOT in any financial.* gate above: a registration account is denied every financial
+    // ability by construction, and the /api/registration routes expose no balance, deposit, withdrawal or disbursement data.
+    // registration.review — monitor, view KYC, note, request information, follow up, move to Under Review.
+    // registration.decide — additionally approve / reject and assign applications to other people (lead, or Admin).
+    Gate::define('registration.review', fn (User $user) => in_array($user->role, ['registration_member', 'registration_lead', 'admin'], true));
+    Gate::define('registration.decide', fn (User $user) => in_array($user->role, ['registration_lead', 'admin'], true));
 
     // Evaluation triggers: only events that can change rank eligibility, and only
     // for the ONE affected investor. The job is queued after commit, de-duplicated

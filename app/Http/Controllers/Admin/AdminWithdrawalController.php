@@ -36,6 +36,9 @@ class AdminWithdrawalController extends Controller
         $withdrawals = $query->get()->map(fn($w) => [
             'id'              => $w->id,
             'amount'          => (float) $w->amount,
+            // Task 5 (additive): fee disclosure frozen at submission
+            'gross_amount' => (string) ($w->gross_amount ?? $w->amount), 'fee_amount' => (string) ($w->fee_amount ?? '0.00'), 'net_amount' => (string) ($w->net_amount ?? $w->amount),
+            'fee_status' => $w->fee_status ?: 'none', 'transaction_reference' => $w->transaction_reference,
             'method'          => $w->method,
             'account_details' => $w->account_details_array,
             'status'          => $w->status,
@@ -88,6 +91,8 @@ class AdminWithdrawalController extends Controller
         $data = [
             'id'              => $withdrawal->id,
             'amount'          => (float) $withdrawal->amount,
+            'gross_amount' => (string) ($withdrawal->gross_amount ?? $withdrawal->amount), 'fee_amount' => (string) ($withdrawal->fee_amount ?? '0.00'), 'net_amount' => (string) ($withdrawal->net_amount ?? $withdrawal->amount),
+            'fee_status' => $withdrawal->fee_status ?: 'none', 'transaction_reference' => $withdrawal->transaction_reference, 'fee_explanation' => $withdrawal->fee_calculation['explanation'] ?? null,
             'method'          => $withdrawal->method,
             'account_details' => $withdrawal->account_details_array,
             'status'          => $withdrawal->status,
@@ -174,6 +179,9 @@ class AdminWithdrawalController extends Controller
                 app(\App\Services\Ledger\PrincipalService::class)->applyWithdrawal($locked, $request->user());
             }
 
+            // Task 5: fee accounting INSIDE the same approval transaction (no-op when the withdrawal carries no fee; never collects twice).
+            app(\App\Services\Task5\WithdrawalFeeService::class)->onApproved($locked->fresh(), $request->user());
+
             return ['ok' => true, 'user' => $user, 'amount' => (float) $locked->amount];
         });
 
@@ -218,6 +226,9 @@ class AdminWithdrawalController extends Controller
                 ['status' => $prevStatus], ['status' => 'rejected', 'amount' => (float) $locked->amount],
                 $request->input('reason')
             );
+
+            // Task 5: a rejected withdrawal never debited the wallet, so any disclosed fee is recorded as not collected.
+            app(\App\Services\Task5\WithdrawalFeeService::class)->onRejected($locked->fresh(), $request->user());
 
             return true;
         });

@@ -27,6 +27,7 @@ class RankFoundationTest extends RankTestCase
     public function test_rank_is_not_mass_assignable(): void
     {
         $this->assertNotContains('investor_rank_id', (new User)->getFillable());
+        $this->strictMassAssignment(false);   // asserts the production (silent-discard) behaviour
         $u = $this->investor();
         $u->update(['investor_rank_id' => $this->rank('elite')->id, 'name' => 'Changed']);
         $this->assertNull($u->fresh()->investor_rank_id);

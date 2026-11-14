@@ -651,49 +651,41 @@ class AdminTaskController extends Controller
 
         $from = $taskAssignment->status;
 
-        DB::transaction(function () use ($request, $taskAssignment, $validated, $profitLoss) {
-            $taskAssignment->update([
-                'amount_used'     => $validated['amount_used']     ?? $taskAssignment->amount_used,
-                'amount_received' => $validated['amount_received'] ?? $taskAssignment->amount_received,
-                'profit_loss'     => $profitLoss,
-                'final_result'    => $validated['final_result']    ?? $taskAssignment->final_result,
-                'result_notes'    => $validated['result_notes']    ?? $taskAssignment->result_notes,
-                'status'          => 'completed',
-                'completed_at'    => now(),
-            ]);
-
-            // Idempotency guard: even though 'completed' is a terminal
-            // status with no exposed route back out of it, this makes it
-            // structurally impossible to double-apply the same result
-            // to the balance regardless of how this method is reached.
-            if ($taskAssignment->balance_applied_at === null && (float) $profitLoss != 0.0) {
-                $user = $taskAssignment->user()->lockForUpdate()->first();
-
-                if ($user) {
-                    $balanceBefore = (float) ($user->balance ?? 0);
-
-                    if ($profitLoss > 0) {
-                        $user->increment('balance', $profitLoss);
-                    } else {
-                        $user->decrement('balance', abs($profitLoss));
-                    }
-
-                    $balanceAfter = (float) $user->fresh()->balance;
-
-                    BalanceAdjustment::create([
-                        'user_id'        => $user->id,
-                        'admin_id'       => $request->user()->id,
-                        'type'           => $profitLoss > 0 ? 'add' : 'deduct',
-                        'amount'         => abs($profitLoss),
-                        'balance_before' => $balanceBefore,
-                        'balance_after'  => $balanceAfter,
-                        'reason'         => "Task {$taskAssignment->task->task_code} result: " . ($profitLoss > 0 ? 'profit' : 'loss') . ' credited to balance',
-                    ]);
+        try {
+            DB::transaction(function () use ($request, $taskAssignment, $validated, $profitLoss) {
+                // R7: lock the ASSIGNMENT row first and re-check state under the lock. The status / balance_applied_at checks above ran on a
+                // stale copy, so two simultaneous "Complete" clicks could both have credited the wallet.
+                $locked = TaskAssignment::whereKey($taskAssignment->id)->lockForUpdate()->first();
+                if (!$locked || !in_array($locked->status, ['submitted', 'under_review'], true)) {
+                    throw \Illuminate\Validation\ValidationException::withMessages(['task' => ['Only a submitted or under-review assignment can be completed.']]);
                 }
-            }
+                $locked->update([
+                    'amount_used'     => $validated['amount_used']     ?? $locked->amount_used,
+                    'amount_received' => $validated['amount_received'] ?? $locked->amount_received,
+                    'profit_loss'     => $profitLoss,
+                    'final_result'    => $validated['final_result']    ?? $locked->final_result,
+                    'result_notes'    => $validated['result_notes']    ?? $locked->result_notes,
+                    'status'          => 'completed',
+                    'completed_at'    => now(),
+                ]);
 
-            $taskAssignment->update(['balance_applied_at' => now()]);
-        });
+                // Exactly-once wallet effect: decimal-safe, row-locked, audited (BalanceAdjustment + FinancialAuditLog) through the same service as
+                // every other balance change; the idempotency key makes a second application impossible at the database level. The documented rule
+                // is preserved: a verified LOSS may take the wallet negative (Management decision #10 in REMAINING_MANAGEMENT_DECISIONS.md).
+                $signed = \App\Support\Decimal::money((string) $profitLoss);
+                if ($locked->balance_applied_at === null && !\App\Support\Decimal::eq($signed, '0')) {
+                    app(\App\Services\Financial\BalanceAdjustmentService::class)->applySigned(
+                        (int) $locked->user_id, $signed,
+                        "Task {$taskAssignment->task->task_code} result: " . (\App\Support\Decimal::isNegative($signed) ? 'loss' : 'profit') . ' credited to balance',
+                        $request->user(), "task-assignment-{$locked->id}", true
+                    );
+                }
+                $locked->update(['balance_applied_at' => now()]);
+            });
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['message' => collect($e->errors())->flatten()->first()], 422);
+        }
+        $taskAssignment->refresh();
 
         $taskAssignment->logs()->create([
             'task_id' => $taskAssignment->task_id,

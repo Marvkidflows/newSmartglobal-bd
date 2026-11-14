@@ -21,8 +21,9 @@ class RankScheduleTest extends RankTestCase
         $out = Artisan::output();
 
         // schedule:list pads the cron columns with extra spaces, so match on whitespace runs.
-        $this->assertMatchesRegularExpression('/\b0\s+2\s+\*\s+\*\s+\*\s+php artisan ranks:evaluate --scheduled/', $out);
-        $this->assertMatchesRegularExpression('/\*\/15\s+\*\s+\*\s+\*\s+\*\s+php artisan ranks:evaluate --retry-notifications/', $out);
+        // schedule:list prints the full path of the PHP binary (e.g. "C:\php\php.exe" "artisan" on Windows), not the word "php", and may quote "artisan".
+        $this->assertMatchesRegularExpression('/\b0\s+2\s+\*\s+\*\s+\*\s+.*artisan"?\s+ranks:evaluate --scheduled/', $out);
+        $this->assertMatchesRegularExpression('/\*\/15\s+\*\s+\*\s+\*\s+\*\s+.*artisan"?\s+ranks:evaluate --retry-notifications/', $out);
     }
 
     public function test_sweep_does_nothing_when_no_criteria_are_active(): void

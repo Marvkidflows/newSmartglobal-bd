@@ -98,7 +98,7 @@ class FinancialControlsController extends Controller
     {
         Gate::authorize('financial.manage-positions');
         $v = $this->redemptionRules($request);
-        return response()->json($this->movementJson($this->principal->returnToWallet($investment, (float) $v['amount'], $v['idempotency_key'], $v['reference'], $v['evidence'], $request->user(), $v['withdrawal_id'] ?? null)), 201);
+        return response()->json($this->movementJson($this->principal->returnToWallet($investment, $v['amount'], $v['idempotency_key'], $v['reference'], $v['evidence'], $request->user(), $v['withdrawal_id'] ?? null)), 201);
     }
 
     // POST /financial/positions/{investment}/external-payout  { amount, idempotency_key, reference, evidence, withdrawal_id? }
@@ -106,7 +106,7 @@ class FinancialControlsController extends Controller
     {
         Gate::authorize('financial.manage-positions');
         $v = $this->redemptionRules($request);
-        return response()->json($this->movementJson($this->principal->externalPayout($investment, (float) $v['amount'], $v['idempotency_key'], $v['reference'], $v['evidence'], $request->user(), $v['withdrawal_id'] ?? null)), 201);
+        return response()->json($this->movementJson($this->principal->externalPayout($investment, $v['amount'], $v['idempotency_key'], $v['reference'], $v['evidence'], $request->user(), $v['withdrawal_id'] ?? null)), 201);
     }
 
     // POST /financial/positions/{investment}/correction  { signed_amount, idempotency_key, approval_reference, evidence }
@@ -114,7 +114,7 @@ class FinancialControlsController extends Controller
     {
         Gate::authorize('financial.manage-positions');
         $v = $request->validate(['signed_amount' => 'required|numeric', 'idempotency_key' => 'required|string|min:8|max:64', 'approval_reference' => 'required|string|min:5|max:160', 'evidence' => 'required|string|min:10|max:2000']);
-        return response()->json($this->movementJson($this->principal->correct($investment, (float) $v['signed_amount'], $v['idempotency_key'], $v['approval_reference'], $v['evidence'], $request->user())), 201);
+        return response()->json($this->movementJson($this->principal->correct($investment, $v['signed_amount'], $v['idempotency_key'], $v['approval_reference'], $v['evidence'], $request->user())), 201);
     }
 
     // POST /financial/withdrawals/{withdrawal}/classify  { components: [{component, amount, investment_id?, verification_note?}] }

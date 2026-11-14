@@ -67,7 +67,7 @@ class LoadRankDemoData extends Command
             'Diamond but not Elite (11 cycles)' => ['diamond',
                 'History: 11 completed USD 5,500 cycles (their principal is no longer counted). Current principal: USD 25,000 active → Diamond; Elite needs 12 cycles',
                 array_merge($done(11, 'USD', 5500, null), [['USD', 25000, null, 'active']])],
-            'Unverified currency counts as zero' => [null,
+            'Unverified currency is excluded, not zero' => [null,
                 '12 completed cycles of 100,000 with NO verified currency: unverified records add no cycle and no principal until a person verifies them → no rank',
                 array_fill(0, 12, [null, 100000, null, 'completed'])],
             'Elite from mixed currencies' => ['elite',

@@ -50,6 +50,14 @@ class LoginController extends Controller
             ])->onlyInput('email');
         }
 
+        // ── SUSPENDED / INACTIVE STAFF — no token is issued (F-15). Suspended INVESTORS may still log in (read-only; enforced by middleware).
+        if (\App\Support\StaffAccountGuard::isStaffRole($user->role) && \App\Support\StaffAccountGuard::isBlocked($user)) {
+            if ($request->expectsJson()) {
+                return response()->json(['success' => false, 'status' => $user->status, 'message' => 'Your account is not active. Please contact your administrator.'], 403);
+            }
+            return back()->withErrors(['email' => 'Your account is not active. Please contact your administrator.'])->onlyInput('email');
+        }
+
         // ── REGISTRATION INCOMPLETE — investors only; admin, financial,
         // and MarvFlow accounts are staff/team accounts created directly
         // (no self-service signup, no registration wizard), so they never
@@ -57,7 +65,7 @@ class LoginController extends Controller
         // listed here, a freshly created MarvFlow account would be
         // permanently blocked at login unless registration_completed was
         // manually set true for it — this makes that unnecessary.
-        $staffRoles = ['admin', 'financial', 'marvflow_member', 'marvflow_lead'];
+        $staffRoles = ['admin', 'financial', 'marvflow_member', 'marvflow_lead', 'registration_member', 'registration_lead'];
         if (!in_array($user->role, $staffRoles, true) && !$user->registration_completed) {
             if ($request->expectsJson()) {
                 return response()->json([

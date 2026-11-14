@@ -8,7 +8,10 @@ use App\Models\User;
 use App\Services\OtpService;
 use App\Services\PhoneNumberService;
 use App\Services\PrivacyPolicyService;
+use App\Services\Registration\RegistrationResumeService;
+use App\Services\Registration\RegistrationTracker;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -18,146 +21,304 @@ class RegisterController extends Controller
     protected OtpService $otpService;
     protected PhoneNumberService $phoneService;
     protected PrivacyPolicyService $privacyPolicy;
+    protected RegistrationResumeService $resume;
+    protected \App\Services\Registration\RegistrationEmailChallengeService $emailChallenges;
 
-    public function __construct(OtpService $otpService, PhoneNumberService $phoneService, PrivacyPolicyService $privacyPolicy)
+    public function __construct(OtpService $otpService, PhoneNumberService $phoneService, PrivacyPolicyService $privacyPolicy, RegistrationResumeService $resume, \App\Services\Registration\RegistrationEmailChallengeService $emailChallenges)
     {
+        $this->resume = $resume;
+        $this->emailChallenges = $emailChallenges;
         $this->otpService = $otpService;
         $this->phoneService = $phoneService;
         $this->privacyPolicy = $privacyPolicy;
     }
 
+    /**
+     * Per-IP hourly cap on how many times an unauthenticated endpoint may be called. It counts EVERY call (not only "interesting" ones), so the
+     * 429 it produces reveals nothing about any email or phone number. Additional to the route-level throttle.
+     */
+    protected function attemptBudget(Request $request, string $bucket, int $max): void
+    {
+        $key = 'registration:' . $bucket . ':' . sha1((string) $request->ip());
+        if (\Illuminate\Support\Facades\RateLimiter::tooManyAttempts($key, max(1, $max))) {
+            abort(response()->json(['success' => false, 'message' => 'Too many attempts. Please try again later.'], 429));
+        }
+        \Illuminate\Support\Facades\RateLimiter::hit($key, 3600);
+    }
+
+    /**
+     * Budget for the ONE response that still discloses something: "this phone number belongs to another account". It is only ever produced AFTER the
+     * caller has proved control of the email address (a valid emailed code), and it is capped per IP so it cannot be used for bulk probing.
+     */
+    protected function discloseOrThrottle(Request $request): void
+    {
+        $this->attemptBudget($request, 'disclose', (int) config('registration.disclosure_limit_per_hour', 20));
+    }
+
+    /** Make the response time independent of which case occurred (timing side channel). */
+    protected function padResponse(float $started): void
+    {
+        $floor = max(0, (int) config('registration.min_response_ms', 400)) / 1000;
+        $left  = $floor - (microtime(true) - $started);
+        if ($left > 0) usleep((int) ($left * 1_000_000));
+    }
+
     // =========================================================================
-    // STAGE 1 — Personal Info + Email + Password
+    // STAGE 1 — validate the form, then prove control of the email. NO account is created here.
     // =========================================================================
+    // SECURITY (enumeration closure): this endpoint returns the SAME response (status, body, message, retry interval) whether the email is new, belongs
+    // to an unfinished registration, belongs to a completed account, a staff account or an inactive account, and whatever the phone number is.
+    //   * new email                  -> a code is emailed (registration_email_challenges); nothing is created
+    //   * unfinished investor        -> a resume code is emailed to the address on file (registration_resume_challenges); nothing is changed
+    //   * completed/staff/inactive   -> nothing is sent, read or changed
+    // All of that work runs AFTER the response has been sent, and the response is padded to a minimum duration, so neither content nor timing
+    // distinguishes the cases. The phone number is only format-checked here; whether it is already registered is decided after the email is proven.
+    // No Telegram alert, tracker record or referral event is produced here: those happen when the account is actually created.
     public function submitStage1(Request $request)
     {
+        $started = microtime(true);
+        $this->attemptBudget($request, 'stage1', (int) config('registration.stage1_attempts_per_hour', 30));
+
         $validated = $request->validate([
             'full_name'    => ['required', 'string', 'max:255'],
             'email'        => ['required', 'email', 'max:255'],
-            // The client now only sends WHICH country was picked (ISO2,
-            // from a real country <select>) and the digits typed for the
-            // phone. Dial code, display country name, and whether the
-            // number is a real, valid number for that country are all
-            // derived + verified server-side below — never trusted from
-            // the client. This replaces the old `max:20`-only phone rule
-            // that let a single digit through.
             'country_iso2' => ['required', 'string', 'size:2'],
             'phone'        => ['required', 'string', 'max:20'],
             'password'     => ['required', 'min:8', 'confirmed'],
             'referral_code'=> ['nullable', 'string', 'max:20'],
-            // Data Privacy Policy acknowledgement (enforced server-side when
-            // config('privacy.acknowledgement_required') is true). Kept
-            // separate from any marketing consent — there is none here.
+            'visitor_token'=> ['nullable', 'string', 'max:64'],
         ] + $this->privacyPolicy->rules(), $this->privacyPolicy->messages());
 
-        $phone = $this->phoneService->validateAndNormalize(
-            $validated['phone'],
-            $validated['country_iso2']
-        );
+        $this->phoneService->validateAndNormalize($validated['phone'], $validated['country_iso2']);   // FORMAT only; says nothing about existing accounts
 
-        $existing = User::where('email', $validated['email'])->first();
-
-        if ($this->phoneService->isDuplicate($phone['phone_e164'], $existing?->id)) {
-            throw ValidationException::withMessages([
-                'phone' => ['This phone number is already registered to another account.'],
-            ]);
-        }
-
-        // ── Email belongs to a COMPLETED account — real conflict, block it ──
-        if ($existing && $existing->registration_completed) {
-            return response()->json([
-                'success' => false,
-                'message' => 'This email is already registered. Please log in instead.',
-            ], 422);
-        }
-
-        // ── Email belongs to an INCOMPLETE registration — resume it ──
-        if ($existing && !$existing->registration_completed) {
-            $existing->update([
-                'name'         => $validated['full_name'],
-                'full_name'    => $validated['full_name'],
-                'country_iso2' => $phone['country_iso2'],
-                'country_code' => $phone['country_code'],
-                'phone'        => $phone['phone_e164'],
-                'country'      => $phone['country_name'],
-                'password'     => Hash::make($validated['password']),
-            ]);
-            $this->privacyPolicy->record($existing, $validated);
-
-            $emailSent = true;
+        $typed = $validated['email'];
+        $ran = false;   // run-once: Laravel's test kernel re-runs earlier requests' terminating callbacks on every later request in the same process
+        app()->terminating(function () use ($typed, &$ran) {
+            if ($ran) return;
+            $ran = true;
             try {
-                $this->otpService->generateAndSend($existing);
-            } catch (\Exception $e) {
-                \Log::error('OTP resend failed during registration resume: '.$e->getMessage());
-                $emailSent = false;
+                $this->issueCodeFor($typed);
+            } catch (\Throwable $e) {
+                \Log::error('Registration code issuing failed: ' . \App\Services\Registration\RegistrationCommunicationService::safeError($e->getMessage()));
             }
+        });
 
-            $token = $existing->createToken('registration')->plainTextToken;
-
-            return response()->json([
-                'success'    => true,
-                'email_sent' => $emailSent,
-                'message'    => $emailSent
-                    ? 'Welcome back! A new verification code has been sent to your email.'
-                    : 'Welcome back! Your account is ready, but we could not send the verification email just now — tap "Resend code" on the next screen to try again.',
-                'token'   => $token,
-                'user'    => ['id' => $existing->id, 'email' => $existing->email],
-            ]);
-        }
-
-        // ── Brand new email — create as before ──
-        $referredBy = null;
-        if (!empty($validated['referral_code'])) {
-            $referrer = User::where('referral_code', $validated['referral_code'])->first();
-            if ($referrer) $referredBy = $referrer->id;
-        }
-
-        $user = User::create([
-            'name'                    => $validated['full_name'],
-            'full_name'               => $validated['full_name'],
-            'email'                   => $validated['email'],
-            'country_iso2'            => $phone['country_iso2'],
-            'country_code'            => $phone['country_code'],
-            'phone'                   => $phone['phone_e164'],
-            'country'                 => $phone['country_name'],
-            'password'                => Hash::make($validated['password']),
-            'role'                    => 'investor',
-            'referral_code'           => strtoupper(Str::random(8)),
-            'referred_by'             => $referredBy,
-            'balance'                 => 0,
-            'registration_stage'      => 1,
-            'registration_completed'  => false,
-            'status'                  => 'active',
-        ]);
-        $this->privacyPolicy->record($user, $validated);
-
-        try {
-            app(\App\Services\TelegramService::class)->newRegistration(
-                $validated['full_name'],
-                $validated['email']
-            );
-        } catch (\Exception $e) {
-            \Log::error('Telegram notification failed: '.$e->getMessage());
-        }
-
-        try {
-            $this->otpService->generateAndSend($user);
-            $emailSent = true;
-        } catch (\Exception $e) {
-            \Log::error('OTP send failed during registration: '.$e->getMessage());
-            $emailSent = false;
-        }
-
-        $token = $user->createToken('registration')->plainTextToken;
+        $this->padResponse($started);
 
         return response()->json([
-            'success'    => true,
-            'email_sent' => $emailSent,
-            'message'    => $emailSent
-                ? 'Stage 1 complete. Verification code sent to your email.'
-                : 'Stage 1 complete, but we could not send the verification email just now — tap "Resend code" on the next screen to try again.',
-            'token'   => $token,
-            'user'    => ['id' => $user->id, 'email' => $user->email],
+            'success'               => true,
+            'verification_required' => true,
+            'email_sent'            => true,
+            'retry_after_seconds'   => max(1, (int) config('registration.resume_request_cooldown_sec')),
+            'message'               => 'If this email address can be used to register, we have sent a 6-digit verification code to it. Enter the code to continue. Nothing is created until you do.',
+        ]);
+    }
+
+    /** Runs after the response. Decides silently what (if anything) to send. */
+    private function issueCodeFor(string $typedEmail): void
+    {
+        $existing = User::where('email', $typedEmail)->first();
+
+        if ($existing) {
+            if ($this->resume->eligible($existing)) {
+                $result = $this->resume->requestCode($existing);
+                if ($result['sent']) {
+                    $this->track(fn (RegistrationTracker $t) => $t->resumeCodeRequested($existing));
+                }
+            } elseif ($existing->role === 'investor') {
+                $this->track(fn (RegistrationTracker $t) => $t->blockedDuplicate($existing));   // internal record for the Registration Team only
+            }
+            return;   // completed / staff / inactive: nothing is emailed, read or changed
+        }
+
+        $this->emailChallenges->requestCode($typedEmail);
+    }
+
+    // =========================================================================
+    // VERIFY — prove control of the email, then create the account (new email) or resume it (unfinished investor)
+    // POST /api/register/verify   (also reachable as POST /api/register/resume/verify, kept for compatibility)
+    // =========================================================================
+    // Every failure — unknown email, completed/staff/inactive account, wrong/expired/locked/undelivered code — returns the same 422. The only
+    // other answers are format errors (which say nothing about accounts) and, AFTER a correct code, "that phone belongs to someone else".
+    public function verify(Request $request)
+    {
+        $started = microtime(true);
+        $this->attemptBudget($request, 'verify', (int) config('registration.verify_attempts_per_hour', 60));
+
+        $validated = $request->validate([
+            'email'        => ['required', 'email', 'max:255'],
+            'code'         => ['required', 'digits:6'],
+            'full_name'    => ['required', 'string', 'max:255'],
+            'country_iso2' => ['required', 'string', 'size:2'],
+            'phone'        => ['required', 'string', 'max:20'],
+            'password'     => ['required', 'min:8', 'confirmed'],
+            'referral_code'=> ['nullable', 'string', 'max:20'],
+            'visitor_token'=> ['nullable', 'string', 'max:64'],
+        ] + $this->privacyPolicy->rules(), $this->privacyPolicy->messages());
+
+        $phone = $this->phoneService->validateAndNormalize($validated['phone'], $validated['country_iso2']);
+
+        $failure = fn () => response()->json([
+            'success' => false,
+            'message' => 'That code is incorrect or has expired. Request a new code and try again.',
+        ], 422);
+
+        $user = User::where('email', $validated['email'])->first();
+
+        if ($user && !$this->resume->eligible($user)) {
+            \App\Models\RegistrationResumeChallenge::hashCode($validated['code']);   // same hashing work as a real check
+            $response = $failure();
+        } elseif ($user) {
+            $response = $this->finishResume($request, $validated, $phone, $user, $failure);
+        } else {
+            $response = $this->finishNew($request, $validated, $phone, $failure);
+        }
+
+        $this->padResponse($started);
+        return $response;
+    }
+
+    /** Unfinished investor registration: unchanged behaviour of the Task 2 resume (atomic verify + apply). */
+    private function finishResume(Request $request, array $validated, array $phone, User $user, \Closure $failure)
+    {
+        // The code check, the credential update and the consumption of the code happen in ONE database transaction (RegistrationResumeService::
+        // verifyAndApply). If anything in the update fails, everything rolls back and the code is still valid. The phone-duplicate check is inside it
+        // and runs only after the code was proven correct, so it can never be an oracle for an unauthenticated caller.
+        try {
+            $outcome = $this->resume->verifyAndApply($user, $validated['code'], function (User $locked) use ($validated, $phone) {
+                if ($this->phoneService->isDuplicate($phone['phone_e164'], $locked->id)) {
+                    throw ValidationException::withMessages([
+                        'phone' => ['This phone number is already registered to another account.'],
+                    ]);
+                }
+
+                $locked->tokens()->delete();   // kill every earlier session, including any obtained by someone else
+
+                $locked->forceFill([
+                    'name'                 => $validated['full_name'],
+                    'full_name'            => $validated['full_name'],
+                    'country_iso2'         => $phone['country_iso2'],
+                    'country_code'         => $phone['country_code'],
+                    'phone'                => $phone['phone_e164'],
+                    'country'              => $phone['country_name'],
+                    'password'             => Hash::make($validated['password']),
+                    'email_verified_at'    => now(),   // the code was delivered to this mailbox and has just been entered
+                    'email_otp'            => null,
+                    'email_otp_expires_at' => null,
+                    'email_otp_attempts'   => 0,
+                ])->save();
+                $this->privacyPolicy->record($locked, $validated);
+
+                return $locked->createToken('registration')->plainTextToken;
+            });
+        } catch (ValidationException $e) {
+            $this->discloseOrThrottle($request);   // only reachable after a CORRECT code; nothing was committed and the code is still valid
+            throw $e;
+        } catch (\Throwable $e) {
+            \Log::error('Registration resume could not be completed (rolled back, code not consumed): ' . \App\Services\Registration\RegistrationCommunicationService::safeError($e->getMessage()));
+            return response()->json([
+                'success' => false,
+                'message' => 'We could not complete that just now. Your code has not been used — please try again in a moment.',
+            ], 503);
+        }
+
+        if ($outcome['locked']) {
+            $this->track(fn (RegistrationTracker $t) => $t->resumeLockedOut($user));
+        }
+        if (!$outcome['ok']) {
+            return $failure();
+        }
+        $token = $outcome['result'];
+        $user->refresh();
+
+        $this->track(fn (RegistrationTracker $t) => $t->resumeVerified($user, $validated['visitor_token'] ?? null));
+
+        return response()->json([
+            'success'            => true,
+            'message'            => 'Verified. Welcome back — let\'s finish your registration.',
+            'token'              => $token,
+            'email_verified'     => true,
+            'registration_stage' => (int) $user->registration_stage,
+            'user'               => ['id' => $user->id, 'email' => $user->email],
+        ]);
+    }
+
+    /** New email: the account is created ONLY now, atomically with the consumption of the emailed code. Role/status/balance are server-set (F-12). */
+    private function finishNew(Request $request, array $validated, array $phone, \Closure $failure)
+    {
+        try {
+            $outcome = $this->emailChallenges->verifyAndApply($validated['email'], $validated['code'], function () use ($validated, $phone) {
+                if ($this->phoneService->isDuplicate($phone['phone_e164'], null)) {
+                    throw ValidationException::withMessages([
+                        'phone' => ['This phone number is already registered to another account.'],
+                    ]);
+                }
+
+                $referredBy = null;
+                if (!empty($validated['referral_code'])) {
+                    $referrer = User::where('referral_code', $validated['referral_code'])->first();
+                    if ($referrer) $referredBy = $referrer->id;
+                }
+
+                $user = User::unguarded(fn () => User::create([
+                    'name'                    => $validated['full_name'],
+                    'full_name'               => $validated['full_name'],
+                    'email'                   => $validated['email'],
+                    'country_iso2'            => $phone['country_iso2'],
+                    'country_code'            => $phone['country_code'],
+                    'phone'                   => $phone['phone_e164'],
+                    'country'                 => $phone['country_name'],
+                    'password'                => Hash::make($validated['password']),
+                    'role'                    => 'investor',
+                    'referral_code'           => app(\App\Services\Task5\ReferralService::class)->newCode(),   // Task 5: collision-checked
+                    'referred_by'             => $referredBy,
+                    'balance'                 => 0,
+                    'registration_stage'      => 1,
+                    'registration_completed'  => false,
+                    'status'                  => 'active',
+                    'email_verified_at'       => now(),   // proven by the emailed code, consumed in this same transaction
+                ]));
+                $this->privacyPolicy->record($user, $validated);
+                return $user;
+            });
+        } catch (ValidationException $e) {
+            $this->discloseOrThrottle($request);   // only reachable after a CORRECT code
+            throw $e;
+        } catch (\Throwable $e) {
+            \Log::error('Registration could not be completed (rolled back, code not consumed): ' . \App\Services\Registration\RegistrationCommunicationService::safeError($e->getMessage()));
+            return response()->json([
+                'success' => false,
+                'message' => 'We could not complete that just now. Your code has not been used — please try again in a moment.',
+            ], 503);
+        }
+
+        if (!$outcome['ok']) {
+            return $failure();
+        }
+
+        /** @var User $user */
+        $user  = $outcome['result'];
+        $token = $user->createToken('registration')->plainTextToken;
+
+        // Everything below is OUTSIDE the transaction and best-effort: the account exists and is verified whatever happens here.
+        $this->track(fn (RegistrationTracker $t) => $t->attempt($user, $validated['visitor_token'] ?? null, false));
+        if ($user->referred_by) {
+            rescue(fn () => app(\App\Services\Task5\ReferralService::class)->log('registration_started', $user->referred_by, $user->id,
+                User::whereKey($user->referred_by)->value('referral_code'), ['fp' => app(\App\Services\Task5\ReferralService::class)->fingerprint($request)]), null, true);
+        }
+        try {
+            app(\App\Services\TelegramService::class)->newRegistration($validated['full_name'], $validated['email']);   // only for a PROVEN email
+        } catch (\Exception $e) {
+            \Log::error('Telegram notification failed: ' . $e->getMessage());
+        }
+
+        return response()->json([
+            'success'            => true,
+            'message'            => 'Email verified. Your account has been created — let\'s continue.',
+            'token'              => $token,
+            'email_verified'     => true,
+            'registration_stage' => 1,
+            'user'               => ['id' => $user->id, 'email' => $user->email],
         ]);
     }
 
@@ -200,6 +361,7 @@ class RegisterController extends Controller
             'postal_code'         => $validated['postal_code'] ?? null,
             'registration_stage'  => 2,
         ]);
+        $this->track(fn (RegistrationTracker $t) => $t->stageCompleted($user, 2));
 
         return response()->json(['success' => true, 'message' => 'Stage 2 complete.']);
     }
@@ -229,6 +391,7 @@ class RegisterController extends Controller
             'investment_objectives' => $validated['investment_objectives'] ?? null,
             'registration_stage'    => 3,
         ]);
+        $this->track(fn (RegistrationTracker $t) => $t->stageCompleted($user, 3));
 
         return response()->json(['success' => true, 'message' => 'Stage 3 complete.']);
     }
@@ -250,9 +413,20 @@ class RegisterController extends Controller
             $user->withdrawal_pin = Hash::make($request->withdrawal_pin);
         }
 
+        $firstCompletion              = !$user->registration_completed;   // Task 5: log the funnel event once
         $user->registration_stage     = 4;
         $user->registration_completed = true;
         $user->save();
+        $this->track(fn (RegistrationTracker $t) => $t->stageCompleted($user, 4));
+
+        // Task 5: registration COMPLETED -> create the Pending reward ledger row. Registration alone never qualifies a referral; eligibility is assessed
+        // later against the (Management-approved) policy. Never allowed to break the registration flow.
+        if ($user->referred_by) {
+            rescue(function () use ($user, $firstCompletion) {
+                if ($firstCompletion) app(\App\Services\Task5\ReferralService::class)->log('registration_completed', $user->referred_by, $user->id, User::whereKey($user->referred_by)->value('referral_code'));
+                app(\App\Services\Task5\ReferralRewardService::class)->createForReferred($user);
+            }, null, true);
+        }
 
         return response()->json([
             'user' => [
@@ -272,5 +446,18 @@ class RegisterController extends Controller
             ],
             'message' => 'Registration complete! Welcome to Smart System Investment.',
         ], 201);
+    }
+
+    /**
+     * Task 2: registration tracking is strictly best-effort. Any failure is logged and swallowed so it can never block, delay or alter
+     * an applicant's registration.
+     */
+    private function track(callable $fn): void
+    {
+        try {
+            $fn(app(RegistrationTracker::class));
+        } catch (\Throwable $e) {
+            \Log::warning('Registration tracking failed: ' . $e->getMessage());
+        }
     }
 }

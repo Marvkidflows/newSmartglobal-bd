@@ -67,7 +67,7 @@ class RankInvestmentLedger
 
         $ids        = $rows->pluck('id')->map(fn ($v) => (int) $v)->all();
         $valuations = $this->latestValuations('investment', $ids);
-        $reductions = LedgerReaders::reductions($ids);
+        $reductions = LedgerReaders::reductionsDecimal($ids);   // exact 2-dp strings (was float sums)
         $blocked    = LedgerReaders::blocked($ids, $rows->pluck('source_deposit_id', 'id')->map(fn ($v) => $v ? (int) $v : null)->all());
         $window     = max(0, (int) config('ranks.duplicate_window_seconds', 60));
         $today      = Carbon::today();
@@ -131,7 +131,7 @@ class RankInvestmentLedger
                 $out[$u]['total_usd'] += $val['usd_amount'];               // historical total (reporting only)
 
                 // CURRENT principal: only ACTIVE positions, net of completed principal reductions (never below zero).
-                $remaining = max(0.0, $amount - (float) ($reductions[$r->id] ?? 0));
+                $remaining = (float) Decimal::max('0', Decimal::sub(Decimal::money($amount), $reductions[$r->id] ?? '0'));   // exact, never below zero
                 $principalUsd = 0.0;
                 if ($r->status === 'active') {
                     $principalUsd = $this->principalUsd($val, $amount, $remaining);
@@ -181,13 +181,13 @@ class RankInvestmentLedger
         if ($remaining >= $amount) return $usd;
         if ($remaining <= 0) return 0.0;
 
-        $reduced = $amount - $remaining;
+        $reduced = Decimal::sub(Decimal::money($amount), Decimal::money($remaining));   // exact (was float subtraction)
         $rate = $val['fx_rate'] ?? null;
         if (($rate === null || (float) $rate <= 0) && ($val['currency'] ?? null) === 'USD') $rate = 1;
         if ($rate === null || (float) $rate <= 0) {
-            return round($usd * $remaining / $amount, 2);                   // no stored rate: proportional share of the verified value
+            return (float) Decimal::div(Decimal::mul(Decimal::money($usd), Decimal::money($remaining)), Decimal::money($amount), 2);   // no stored rate: proportional share of the verified value, exact half-up
         }
-        $reducedUsd = (float) Decimal::mulHalfUp(Decimal::norm($reduced), Decimal::norm($rate), 2);
+        $reducedUsd = (float) Decimal::mulHalfUp($reduced, Decimal::fromInput($rate), 2);
         return max(0.0, round($usd - $reducedUsd, 2));
     }
 

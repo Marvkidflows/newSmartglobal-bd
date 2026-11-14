@@ -29,6 +29,8 @@ class MarvflowMiddleware
         $user = $request->user();
 
         if ($user && ($user->role === 'marvflow_member' || $user->role === 'marvflow_lead')) {
+            // F-15: a suspended / deactivated staff account is refused and its token revoked
+            if ($blocked = \App\Support\StaffAccountGuard::refuse($request, $user)) return $blocked;
             return $next($request);
         }
 

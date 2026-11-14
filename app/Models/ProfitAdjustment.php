@@ -15,10 +15,12 @@ class ProfitAdjustment extends Model
         'percentage_change',
         'affected_count',
         'reason',
+        'status', 'approval_request_id', 'approved_by', 'authorization_reference', 'reversed_at', 'reversed_by', 'reversal_reason',
     ];
 
     protected $casts = [
         'percentage_change' => 'decimal:2',
+        'reversed_at'       => 'datetime',
     ];
 
     public function admin()

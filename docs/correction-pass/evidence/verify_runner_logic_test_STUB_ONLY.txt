@@ -1,0 +1,30 @@
+##############################################################################################
+# STUB-ONLY. Control flow of scripts/verify-all.sh with FAKE php/composer binaries that always succeed.
+# Every PASS line below is a STUB — NONE is an application test result.
+##############################################################################################
+=== A: no MySQL (expect 3 SKIP, exit 1)
+PASS 01-composer-install composer install           (log: verification-logs/20261105-052946/01-composer-install.log)
+PASS 02-php-lint php -l on every PHP file           (log: verification-logs/20261105-052946/02-php-lint.log)
+PASS 03-entrypoint-shell scripts/test-entrypoint.sh (log: verification-logs/20261105-052946/03-entrypoint-shell.log)
+PASS 03b-defaults-in-force ssi:defaults-report --check (documented safe defaults are in force) (log: verification-logs/20261105-052946/03b-defaults-in-force.log)
+PASS 04-sqlite-suite php artisan test (SQLite, full default suite) (log: verification-logs/20261105-052946/04-sqlite-suite.log)
+PASS 05-strict-mass-assignment full suite with SSI_STRICT_MASS_ASSIGNMENT=1 (R2) (log: verification-logs/20261105-052946/05-strict-mass-assignment.log)
+PASS 06-correction-tests focused correction/remediation tests (log: verification-logs/20261105-052946/06-correction-tests.log)
+SKIP 07-mysql-concurrency MySQL concurrency + locking suite REASON: no MySQL test database configured (set DB_HOST/DB_DATABASE (name containing 'test')/DB_USERNAME/DB_PASSWORD)
+SKIP 08-mysql-migrate-and-schema-check migrate fresh + ssi:schema-check REASON: no MySQL test database configured
+SKIP 09-mysql-migration-rollback migration down()/up() REASON: no MySQL test database configured
+FAILED steps: 0    SKIPPED steps: 3
+RESULT: NOT VERIFIED (failures or skipped steps). Do not claim readiness.
+exit=1
+
+=== B: defaults deviation fails the gate (expect FAIL 03b, exit 1)
+FAIL 03b-defaults-in-force ssi:defaults-report --check (documented safe defaults are in force) (exit 1; see verification-logs/20261105-052946/03b-defaults-in-force.log)
+FAILED steps: 1    SKIPPED steps: 3
+RESULT: NOT VERIFIED (failures or skipped steps). Do not claim readiness.
+exit=1
+
+=== C: MySQL configured, all stub steps ok (expect exit 0)
+
+FAILED steps: 0    SKIPPED steps: 0
+RESULT: all steps ran and passed. Attach verification-logs/20261105-052946/ to the report. (Frontend + browser checks are separate: scripts/verify-frontend.sh, docs/correction-pass/BROWSER_TEST_SCRIPT.md)
+exit=0

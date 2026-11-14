@@ -29,12 +29,18 @@ COPY . .
 # Install PHP dependencies
 RUN composer install --no-dev --optimize-autoloader --no-interaction
 
-# Set storage permissions
-RUN chmod -R 777 storage bootstrap/cache
-
-# Copy entrypoint script
+# Copy entrypoint script (read-only, executable, owned by root)
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh
+
+# Least privilege: only storage/ and bootstrap/cache/ are writable, and only by the unprivileged runtime user (was: chmod -R 777).
+RUN mkdir -p storage/logs storage/framework/cache storage/framework/sessions storage/framework/views storage/app bootstrap/cache \
+    && chown -R www-data:www-data storage bootstrap/cache \
+    && find storage bootstrap/cache -type d -exec chmod 0775 {} + \
+    && find storage bootstrap/cache -type f -exec chmod 0664 {} +
+
+# Run as the unprivileged user. (Port 8000 is > 1024, so no root is needed.)
+USER www-data
 
 # Expose application port
 EXPOSE 8000

@@ -204,14 +204,36 @@ class FinancialTransactionsAndCommunicationsTest extends TestCase
     // RECORD CORRECTIONS
     // ═══════════════════════════════════════════════════════════════
 
-    public function test_authorized_correction_updates_record_recomputes_and_audits(): void
+    // R7: a correction is now a REQUEST. The record is untouched until a DIFFERENT authorised person approves it; derived values are recomputed
+    // (decimal, half-up) only at execution.
+    protected function correctUrl($inv): string { return "/api/financial/investments/{$inv->id}/correct"; }
+    protected function approveAsAdmin(int $requestId)
+    {
+        return $this->actingAs($this->admin, 'sanctum')->postJson("/api/financial/approvals/{$requestId}/approve");
+    }
+
+    public function test_authorized_correction_waits_for_second_approval_then_updates_recomputes_and_audits(): void
     {
         $inv = $this->makeInvestment($this->investor);
         $balanceBefore = (float) $this->investor->fresh()->balance;
 
-        $res = $this->fin()->postJson("/api/financial/investments/{$inv->id}/correct", [
-            'amount' => 2000, 'reason' => 'Correction requested after record review.',
-        ])->assertOk();
+        $sub = $this->fin()->postJson($this->correctUrl($inv), [
+            'amount' => 2000, 'reason' => 'Correction requested after record review.', 'authorization_reference' => 'CASE-2026-114',
+        ])->assertStatus(202)->assertJsonPath('pending_approval', true);
+
+        // nothing changed, nothing audited, investor not told, until approval
+        $inv->refresh();
+        $this->assertEquals(1000, $inv->amount);
+        $this->assertEquals(100, $inv->expected_profit);
+        $this->assertSame(0, FinancialAuditLog::where('action', 'investment.record_corrected')->count());
+        $this->assertSame(0, $this->investor->notifications()->count());
+
+        // the requester cannot approve their own correction
+        $id = $sub->json('approval_request_id');
+        $this->fin()->postJson("/api/financial/approvals/{$id}/approve")->assertStatus(422);
+        $this->assertEquals(1000, $inv->fresh()->amount);
+
+        $this->approveAsAdmin($id)->assertOk();
 
         $inv->refresh();
         $this->assertEquals(2000, $inv->amount);
@@ -221,25 +243,26 @@ class FinancialTransactionsAndCommunicationsTest extends TestCase
         $this->assertEquals($balanceBefore, (float) $this->investor->fresh()->balance);
 
         $log = FinancialAuditLog::where('action', 'investment.record_corrected')->firstOrFail();
-        $this->assertSame($res->json('audit_reference'), $log->reference);
         $this->assertEquals(1000, $log->previous_value['amount']);
         $this->assertEquals(2000, $log->new_value['amount']);
+        $this->assertSame($this->admin->id, (int) $log->new_value['approved_by']);
+        $this->assertSame('CASE-2026-114', $log->new_value['authorization_reference']);
         $this->assertSame('Correction requested after record review.', $log->reason);
         $this->assertSame($this->financial->id, $log->actor_id);
         $this->assertSame($this->investor->id, $log->investor_id);
-        $this->assertNotNull($log->created_at);
 
-        // investor is told
+        // investor is told ONLY after successful execution
         $this->assertSame(1, $this->investor->notifications()->count());
     }
 
     public function test_client_cannot_supply_computed_fields(): void
     {
         $inv = $this->makeInvestment($this->investor);
-        $this->fin()->postJson("/api/financial/investments/{$inv->id}/correct", [
+        $id = $this->fin()->postJson($this->correctUrl($inv), [
             'amount' => 500, 'expected_profit' => 999999, 'total_return' => 999999,
-            'reason' => 'Fixing a data entry mistake.',
-        ])->assertOk();
+            'reason' => 'Fixing a data entry mistake.', 'authorization_reference' => 'CASE-2026-115',
+        ])->assertStatus(202)->json('approval_request_id');
+        $this->approveAsAdmin($id)->assertOk();
 
         $this->assertEquals(50, $inv->fresh()->expected_profit);
         $this->assertEquals(550, $inv->fresh()->total_return);
@@ -248,17 +271,33 @@ class FinancialTransactionsAndCommunicationsTest extends TestCase
     public function test_invalid_corrections_are_rejected_and_not_audited(): void
     {
         $inv = $this->makeInvestment($this->investor);
-        $url = "/api/financial/investments/{$inv->id}/correct";
+        $url = $this->correctUrl($inv);
+        $ref = ['authorization_reference' => 'CASE-1'];
 
-        $this->fin()->postJson($url, ['amount' => 500])->assertStatus(422);                                        // no reason
-        $this->fin()->postJson($url, ['amount' => 500, 'reason' => 'short'])->assertStatus(422);                    // reason too short
-        $this->fin()->postJson($url, ['amount' => -5, 'reason' => 'Negative amount attempt.'])->assertStatus(422);  // negative
-        $this->fin()->postJson($url, ['amount' => 'abc', 'reason' => 'Non numeric amount.'])->assertStatus(422);
-        $this->fin()->postJson($url, ['reason' => 'Nothing to change here.'])->assertStatus(422);                   // no value
-        $this->fin()->postJson($url, ['amount' => 1000, 'reason' => 'Identical to current value.'])->assertStatus(422); // unchanged
+        $this->fin()->postJson($url, ['amount' => 500] + $ref)->assertStatus(422);                                        // no reason
+        $this->fin()->postJson($url, ['amount' => 500, 'reason' => 'short'] + $ref)->assertStatus(422);                    // reason too short
+        $this->fin()->postJson($url, ['amount' => 500, 'reason' => 'Missing authorisation reference.'])->assertStatus(422);  // R7: reference required
+        $this->fin()->postJson($url, ['amount' => -5, 'reason' => 'Negative amount attempt.'] + $ref)->assertStatus(422);  // negative
+        $this->fin()->postJson($url, ['amount' => 'abc', 'reason' => 'Non numeric amount.'] + $ref)->assertStatus(422);
+        $this->fin()->postJson($url, ['reason' => 'Nothing to change here.'] + $ref)->assertStatus(422);                   // no value
+        $this->fin()->postJson($url, ['amount' => 1000, 'reason' => 'Identical to current value.'] + $ref)->assertStatus(422); // unchanged
 
         $this->assertEquals(1000, $inv->fresh()->amount);
         $this->assertSame(0, FinancialAuditLog::count());
+        $this->assertSame(0, \App\Models\FinancialApprovalRequest::count());   // an invalid correction never creates an approval request
+    }
+
+    public function test_a_correction_cannot_execute_after_the_record_changed_since_the_request(): void
+    {
+        $inv = $this->makeInvestment($this->investor);
+        $id = $this->fin()->postJson($this->correctUrl($inv), ['amount' => 1500, 'reason' => 'Stale request check.', 'authorization_reference' => 'CASE-9'])
+            ->assertStatus(202)->json('approval_request_id');
+        $inv->forceFill(['amount' => 1200])->save();                                    // someone else changed the record meanwhile
+
+        $this->approveAsAdmin($id)->assertStatus(422);
+        $this->assertEquals(1200, $inv->fresh()->amount);
+        $this->assertSame('failed', \App\Models\FinancialApprovalRequest::find($id)->status);
+        $this->assertSame(0, FinancialAuditLog::where('action', 'investment.record_corrected')->count());
     }
 
     public function test_completed_or_paid_investments_cannot_be_corrected(): void
@@ -267,8 +306,8 @@ class FinancialTransactionsAndCommunicationsTest extends TestCase
         $paid = $this->makeInvestment($this->investor, ['is_paid' => true]);
 
         foreach ([$done, $paid] as $inv) {
-            $this->fin()->postJson("/api/financial/investments/{$inv->id}/correct", [
-                'amount' => 5, 'reason' => 'Trying to alter a closed record.',
+            $this->fin()->postJson($this->correctUrl($inv), [
+                'amount' => 5, 'reason' => 'Trying to alter a closed record.', 'authorization_reference' => 'CASE-3',
             ])->assertStatus(422);
         }
         $this->assertSame(0, FinancialAuditLog::count());
@@ -277,7 +316,7 @@ class FinancialTransactionsAndCommunicationsTest extends TestCase
     public function test_investor_and_guest_cannot_correct_records(): void
     {
         $inv = $this->makeInvestment($this->investor);
-        $payload = ['amount' => 5000, 'reason' => 'Investor trying to inflate own record.'];
+        $payload = ['amount' => 5000, 'reason' => 'Investor trying to inflate own record.', 'authorization_reference' => 'X-1'];
 
         $this->actingAs($this->investor, 'sanctum')->postJson("/api/financial/investments/{$inv->id}/correct", $payload)->assertStatus(403);
         $this->app['auth']->forgetGuards();

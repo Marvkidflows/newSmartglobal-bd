@@ -103,9 +103,12 @@ class DepositPaymentService
             $warnings = $isUsd ? [] : $this->valuations->rateWarnings($currency, $fx, Carbon::parse($d['rate_date']), !empty($d['payment_date']) ? Carbon::parse($d['payment_date']) : $locked->created_at, null, null, (int) $locked->id);
             if ($warnings && !$acknowledgeRateWarnings) throw ValidationException::withMessages(['rate_warnings' => $warnings]);
 
-            $paidAmount = round((float) $paid, 2);
-            $computed   = round($paidAmount * $fx, 2);
-            $approved   = (isset($d['approved_amount']) && $d['approved_amount'] !== '' && $d['approved_amount'] !== null) ? round((float) $d['approved_amount'], 2) : $computed;
+            // R6 / F-13: the conversion mode is explicit. Default 'legacy_float' = the ORIGINAL calculation, unchanged (no valuation rule changes without
+            // written Finance approval — docs/REMAINING_MANAGEMENT_DECISIONS.md #5). 'exact_decimal' = exact half-up to cents; it can differ from the
+            // float result by 0.01 USD in rare cases (docs/R6_ROUNDING_COMPARISON.md) and therefore must be approved before it is switched on.
+            $paidAmount = $this->money2($paid);
+            $computed   = $this->convertUsd($paid, $isUsd ? '1' : (string) $rate);
+            $approved   = (isset($d['approved_amount']) && $d['approved_amount'] !== '' && $d['approved_amount'] !== null) ? $this->money2($d['approved_amount']) : $computed;
 
             // The approved USD value must follow from what was paid and the recorded rate; a larger difference is only
             // allowed when staff knowingly acknowledge it (it is stored and audited).
@@ -177,7 +180,7 @@ class DepositPaymentService
         }
 
         if (!$why && (float) $d->fx_rate > 0) {
-            $computed = round((float) $d->paid_amount * (float) $d->fx_rate, 2);
+            $computed = $this->convertUsd($d->paid_amount, (string) $d->fx_rate);
             $pct = $computed > 0 ? abs((float) $d->approved_amount - $computed) / $computed * 100 : 100.0;
             if ($pct > (float) config('ranks.approved_amount_tolerance_percent', 1) && !$d->amount_difference_acknowledged) {
                 $why[] = 'The approved amount does not follow from the amount paid and the recorded rate.';
@@ -235,5 +238,25 @@ class DepositPaymentService
         // Preserve the conversion staff recorded (original amount/currency, rate, source, timestamps, method, USD) as an immutable snapshot.
         try { $fxc->snapshotFromDeposit($deposit->fresh(), $actor); }
         catch (\Throwable $e) { Log::warning("Deposit #{$deposit->id}: conversion snapshot not written: " . $e->getMessage()); }
+    }
+
+    // ── R6: explicit, switchable valuation arithmetic ────────────────────────────────────────────────────────────────────────────────
+    protected function exactValuation(): bool
+    {
+        return config('financial.deposit_valuation_mode', 'legacy_float') === 'exact_decimal';
+    }
+
+    protected function money2(mixed $v): float
+    {
+        return $this->exactValuation() ? (float) \App\Support\Decimal::money($v) : round((float) $v, 2);
+    }
+
+    /** USD value of an amount paid at a rate: paid × rate, to cents. */
+    protected function convertUsd(mixed $paid, string $rate): float
+    {
+        if ($this->exactValuation()) {
+            return (float) \App\Support\Decimal::mulHalfUp(\App\Support\Decimal::money($paid), \App\Support\Decimal::fromInput($rate), 2);
+        }
+        return round(round((float) $paid, 2) * (float) $rate, 2);       // original behaviour, byte-for-byte
     }
 }

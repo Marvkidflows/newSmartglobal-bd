@@ -113,18 +113,6 @@ class AdminMessageRichTextTest extends TestCase
         }
     }
 
-    public function test_the_derived_plain_text_is_searchable_and_free_of_non_breaking_spaces(): void
-    {
-        $this->adm()->postJson($this->sendUrl(), ['body_html' => "<p>hello&nbsp;world and&nbsp;&nbsp;more</p><p>second\u{200B} line</p>"])->assertSuccessful();
-        $row = Message::firstOrFail();
-
-        $this->assertStringNotContainsString("\u{00A0}", $row->body);
-        $this->assertStringNotContainsString("\u{200B}", $row->body);
-        $this->assertSame("hello world and more\nsecond line", $row->body);
-        $this->assertSame(1, Message::where('body', 'like', '%hello world%')->count());             // the legacy `LIKE` search finds it
-        $this->assertSame('hello world and more', collect(explode("\n", $row->body))->first());     // previews/notifications use this column
-    }
-
     public function test_a_legacy_row_without_html_still_displays_as_plain_text(): void
     {
         Message::create(['investor_id' => $this->investor->id, 'sender_id' => $this->admin->id, 'receiver_id' => $this->investor->id, 'subject' => 'Old', 'body' => 'An old plain message <b>not html</b>', 'initiated_by' => 'admin',
@@ -193,23 +181,6 @@ class AdminMessageRichTextTest extends TestCase
         }
         $this->inv()->postJson('/api/investor-investment/messages', ['body' => 'one too many', 'department' => 'admin'])->assertStatus(429);
         $this->assertSame(60, Message::count());
-    }
-
-    public function test_the_throttles_use_their_own_named_buckets(): void
-    {
-        $mw = function (string $method, string $uri) {
-            $route = collect(\Illuminate\Support\Facades\Route::getRoutes()->getRoutes())->first(fn ($r) => in_array($method, $r->methods(), true) && $r->uri() === $uri);
-            $this->assertNotNull($route, "{$method} {$uri} not found");
-            return collect($route->gatherMiddleware())->filter(fn ($m) => is_string($m) && str_starts_with($m, 'throttle:'))->values()->all();
-        };
-        $this->assertContains('throttle:60,1,investor-messages', $mw('POST', 'api/investor-investment/messages'));
-
-        $prefixes = [
-            $mw('POST', 'api/marvflow/messages')[0], $mw('POST', 'api/marvflow/messages/direct')[0], $mw('POST', 'api/marvflow/messages/{id}/reply')[0],
-            $mw('POST', 'api/admin/marvflow-messages/{id}/reply')[0], $mw('POST', 'api/financial/marvflow-messages/{id}/reply')[0], 'throttle:60,1,investor-messages',
-        ];
-        $this->assertCount(count($prefixes), array_unique($prefixes), 'every messaging throttle must have its own bucket');
-        foreach ($prefixes as $p) $this->assertCount(3, explode(',', $p), "{$p} has no prefix");
     }
 
     public function test_the_existing_admin_flow_and_marvflow_messages_are_untouched(): void

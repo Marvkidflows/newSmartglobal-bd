@@ -40,22 +40,23 @@ class InvestmentSettlementService
                 return ['completed' => false, 'credited' => 0.0, 'reason' => 'status_' . $locked->status, 'user_id' => $locked->user_id];
             }
 
-            $profit = (float) ($locked->expected_profit ?? 0);
+            // F-13: exact decimal (string) all the way to the SQL increment; no float is added to a balance.
+            $profit = \App\Support\Decimal::money($locked->expected_profit ?? 0);
             $locked->update(['status' => 'completed']);
 
-            if ($profit != 0.0) {
+            if (!\App\Support\Decimal::eq($profit, '0')) {
                 $user = User::query()->whereKey($locked->user_id)->lockForUpdate()->first();
                 if ($user) {
                     $user->increment('balance', $profit);
                     // Financial Team §1B: the profit credited at completion is its own classification. Principal is NOT credited here.
                     app(\App\Services\Ledger\WalletLedger::class)->record([
                         'entry_key' => "settle:{$locked->id}:profit", 'user_id' => $user->id, 'classification' => 'profit_credit', 'direction' => 'credit',
-                        'amount' => $profit, 'investment_id' => $locked->id, 'balance_after' => (float) $user->fresh()->balance, 'note' => 'Profit credited at cycle completion (principal untouched)',
+                        'amount' => $profit, 'investment_id' => $locked->id, 'balance_after' => \App\Support\Decimal::money($user->fresh()->balance), 'note' => 'Profit credited at cycle completion (principal untouched)',
                     ]);
                 }
             }
 
-            return ['completed' => true, 'credited' => $profit, 'reason' => null, 'user_id' => $locked->user_id];
+            return ['completed' => true, 'credited' => (float) $profit, 'reason' => null, 'user_id' => $locked->user_id];
         });
 
         Log::info('investment settlement', [

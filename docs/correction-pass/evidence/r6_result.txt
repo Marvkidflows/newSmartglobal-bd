@@ -1,0 +1,14 @@
+cases: 2,000,000   exact half-cent ties: 10,765
+[naive] cases where old != new: 1,420 (0.0710%)   max |difference| = 0.01 USD
+    paid=1,087,364.50 rate=2.11  old=2294339.09  new(half-up)=2294339.10
+    paid=68.10 rate=1.95  old=132.79  new(half-up)=132.80
+    paid=96.46 rate=1.75  old=168.80  new(half-up)=168.81
+    paid=60.91 rate=2.500  old=152.27  new(half-up)=152.28
+    paid=17.74 rate=0.25  old=4.43  new(half-up)=4.44
+[preround] cases where old != new: 0 (0.0000%)   max |difference| = 0 USD
+tie-check paid=0.1 rate=0.5: exact=0.05  old(naive)=0.05  old(preround)=0.05  new=0.05
+tie-check paid=0.01 rate=0.5: exact=0.005  old(naive)=0.01  old(preround)=0.01  new=0.01
+tie-check paid=10.05 rate=0.01: exact=0.1005  old(naive)=0.1  old(preround)=0.1  new=0.10
+tie-check paid=123.45 rate=0.0005: exact=0.061725  old(naive)=0.06  old(preround)=0.06  new=0.06
+tie-check paid=1.0 rate=1.005: exact=1.005  old(naive)=1.0  old(preround)=1.01  new=1.01
+tie-check paid=0.01 rate=1.5: exact=0.015  old(naive)=0.02  old(preround)=0.02  new=0.02

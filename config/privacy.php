@@ -13,6 +13,9 @@
 // from GET /api/privacy-policy, so it follows this value automatically).
 
 return [
+    // Whether email rich-text may keep external https <img> sources. OFF until Management decides (decision #6): they act as tracking pixels.
+    'email_external_images' => (bool) env('PRIVACY_EMAIL_EXTERNAL_IMAGES', false),
+
 
     // Identifier recorded against a user when they acknowledge the policy.
     'version' => env('PRIVACY_POLICY_VERSION', '2026-10-23-draft'),

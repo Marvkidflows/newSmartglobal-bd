@@ -92,12 +92,13 @@ class AdminKycController extends Controller
             return response()->json(['message' => 'This investor has not submitted any verification documents.'], 422);
         }
 
-        $user->update([
+        $user->forceFill([   // KYC state is not mass-assignable
             'kyc_status'           => 'approved',
             'kyc_verified'         => true,
             'kyc_verified_at'      => now(),
             'kyc_rejection_reason' => null,
-        ]);
+        ])->save();
+        $this->syncRegistration($user, 'approved', null, $request->user());
 
         if ($request->expectsJson()) {
             return response()->json(['message' => 'Investor verified successfully.', 'kyc_status' => 'approved']);
@@ -113,16 +114,27 @@ class AdminKycController extends Controller
             'reason' => ['required', 'string', 'max:1000'],
         ]);
 
-        $user->update([
+        $user->forceFill([   // KYC state is not mass-assignable
             'kyc_status'           => 'rejected',
             'kyc_verified'         => false,
             'kyc_verified_at'      => null,
             'kyc_rejection_reason' => $validated['reason'],
-        ]);
+        ])->save();
+        $this->syncRegistration($user, 'rejected', $validated['reason'], $request->user());
 
         if ($request->expectsJson()) {
             return response()->json(['message' => 'Verification rejected.', 'kyc_status' => 'rejected']);
         }
         return back()->with('success', 'Verification rejected.');
+    }
+
+    /** Task 2: keep the Registration Team's application record consistent with an Admin KYC decision (best-effort; never blocks the decision). */
+    private function syncRegistration(User $user, string $decision, ?string $reason, ?User $admin): void
+    {
+        try {
+            app(\App\Services\Registration\RegistrationTracker::class)->adminKycDecision($user, $decision, $reason, $admin);
+        } catch (\Throwable $e) {
+            \Log::warning('Registration sync after admin KYC decision failed: ' . $e->getMessage());
+        }
     }
 }

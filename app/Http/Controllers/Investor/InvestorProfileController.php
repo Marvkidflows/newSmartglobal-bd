@@ -199,7 +199,7 @@ public function submitKyc(Request $request)
         ]
     );
 
-    $user->update([
+    $user->forceFill([   // KYC state is not mass-assignable
         'id_type'              => $validated['id_type'],
         'id_number'            => $validated['id_number'],
         'id_document_path'     => $document['secure_url'],
@@ -208,7 +208,14 @@ public function submitKyc(Request $request)
         'kyc_verified'         => false,
         'kyc_verified_at'      => null,
         'kyc_rejection_reason' => null,
-    ]);
+    ])->save();
+
+    // Task 2: tell the Registration Team's tracking a submission arrived (best-effort — never blocks the investor's submission).
+    try {
+        app(\App\Services\Registration\RegistrationTracker::class)->kycSubmitted($user);
+    } catch (\Throwable $e) {
+        \Log::warning('Registration tracking (kyc) failed: ' . $e->getMessage());
+    }
 
     return response()->json([
         'message' => 'Verification documents submitted successfully.',

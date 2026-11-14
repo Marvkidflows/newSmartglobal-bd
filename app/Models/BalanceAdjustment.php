@@ -15,6 +15,9 @@ class BalanceAdjustment extends Model
         'balance_before',
         'balance_after',
         'reason',
+        'idempotency_key',
+        'approval_request_id',
+        'approved_by',
     ];
 
     protected $casts = [

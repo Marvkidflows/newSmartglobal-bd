@@ -1,0 +1,25 @@
+# R8 — independent re-review of the rewritten `FinancialApprovalService`
+Desk review of `app/Services/Financial/FinancialApprovalService.php` (and its callers) for transaction consistency, retry safety, cancellation, expiry and duplicate handling. **No code here has been executed.**
+
+## Verdicts
+| Concern | Verdict | Detail |
+|---|---|---|
+| **Transaction consistency** | **Sound after 2 fixes** | Claim + execute + final status are one outer transaction; the executed operation runs in a **savepoint** so a business failure rolls back only the money/record change and the `failed` record + event commit. Crash anywhere ⇒ everything rolls back ⇒ request stays `pending`/`failed` exactly as before, no stuck state. *Fix 1:* a MySQL **deadlock / lock-wait timeout** inside the executed operation rolls back the *whole* outer transaction; the old catch-all would then have tried to write `failed` into a dead transaction. Now such errors are rethrown and the outer `DB::transaction(…, 3)` re-runs the claim from scratch (nothing was committed; every check is repeated). After 3 attempts the error surfaces as a 500 and the request is untouched |
+| **Retry safety** | **Sound after 1 fix** | Retry re-runs every check (approver ≠ requester, roles, active status, payload hash, no identical pending request) and re-executes under the same locks; per-operation exactly-once keys exist (`approval-{id}` balance key, `profit_adjustments.approval_request_id`). *Fix 2:* `recoverStuck()` marks rows whose execution cannot be proven (bulk / reversal / correction legacy `approved`) as `failed`; the UI would have offered **Retry**, which could apply them twice. Those rows now carry `needs_manual_verification`, **retry is refused server-side**, `can_retry=false`, and the only exit is *cancel* (then re-submit after a human has verified). Test + UI added |
+| **Cancellation** | **Sound** | Requester or an active Admin; only `pending`/`failed`; row-locked; clears `open_key` (an identical request can then be re-submitted); event recorded. Other roles refused. A failed request can be cancelled |
+| **Expiry** | **Sound, off by default** | `expires_at` set only if `FIN_APPROVAL_EXPIRY_HOURS` is configured; an overdue pending request is marked `expired` and refused when someone tries to approve (committed, not rolled back); `ssi:approvals-maintain` bulk-expires. **Not covered by design:** `failed` requests never expire; `reject` of an overdue-but-not-yet-marked request is allowed (harmless). Policy is Management decision #8 |
+| **Duplicate requests** | **Sound, one nuance fixed** | Same Idempotency-Key + same payload ⇒ original returned; same key + different payload ⇒ **409**; identical payload without key ⇒ existing pending returned (`open_key` unique, only while pending; a race on insert is caught via `UniqueConstraintViolationException`). *Nuance fixed:* a duplicate that maps to an **already-decided** request is now answered 200 with the real status instead of "202 awaiting approval" |
+| Self-approval / self-rejection | Sound | Checked in `assertMayDecide` for approve, reject and retry, using a fresh DB read of the approver |
+| Account status | Sound | Requester and approver must be `active` staff with an allowed role at decision/execution time (fresh DB read) |
+| Payload integrity | Sound | Canonical (recursively key-sorted) hash verified before execution; survives MySQL JSON key reordering; list order preserved |
+| Lock ordering / deadlock exposure | Acceptable | Approval row first, then target user / investment rows; `submitOrApply` locks requester then target. Bulk and settlement paths lock ascending ids. Deadlocks, if any, are now retried (fix 1) |
+
+## Residual risks (not fixed — by design or out of scope)
+1. **Thresholds do not stop collusion** between two requesters acting together; the second approver is the control for that.
+2. `ssi:approvals-maintain` is **not scheduled**; stuck legacy rows stay until someone runs it (shown as "stuck" in the inbox).
+3. The cumulative-window check reads executed + pending totals under a per-requester row lock; across **different requesters** there is no combined cap (not requested).
+4. A request can still fail only at execution for reasons visible earlier (e.g. balance fell) — intended; it is recorded as `failed` with the reason and is retryable by a different person.
+5. All of this is unexecuted; the MySQL tests that would prove the concurrency claims are written but have not been run.
+
+## Tests covering this review (written, not executed)
+`ApprovalWorkflowHardeningTest`: excess deduction, re-validation at execution, idempotency 409, duplicate pending, decided-duplicate 200, canonical hash, history order, append-only events, cancel, expiry (+disabled default), suspended/frozen approver and requester, retry (blocked / blocked-for-requester / success / decided once), legacy recovery + dry-run, **undeterminable ⇒ never retryable**. `MySqlApprovalConcurrencyTest`: two approvers, parallel duplicate submissions, key with two payloads, hash round trip.

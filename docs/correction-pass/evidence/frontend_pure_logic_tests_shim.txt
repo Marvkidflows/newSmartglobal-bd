@@ -1,0 +1,29 @@
+PASS interpretAdjustmentResponse (R4: 200 vs 202) › treats HTTP 200 as completed
+PASS interpretAdjustmentResponse (R4: 200 vs 202) › treats HTTP 202 as pending with the fixed message, id and status
+PASS interpretAdjustmentResponse (R4: 200 vs 202) › treats pending_approval:true as pending even if the status code were lost
+PASS interpretAdjustmentResponse (R4: 200 vs 202) › flags a duplicate pending request
+PASS notifyAdjustmentResult never claims completion for a pending request › shows a success toast only for 200
+PASS notifyAdjustmentResult never claims completion for a pending request › for 202 shows the awaiting-approval text with the request id and NO success toast
+PASS notifyAdjustmentResult never claims completion for a pending request › pendingText mentions a duplicate
+PASS adjustmentErrorMessage › uses the first validation error on 422
+PASS adjustmentErrorMessage › explains 403 and 409
+PASS adjustmentErrorMessage › falls back for network errors
+PASS approval view helpers › labels operations and tolerates unknown ones
+PASS approval view helpers › colours failed and stuck as danger, pending as warning, executed as success
+PASS approval view helpers › shows before and proposed values for a correction, with derived values marked as recalculated on approval
+PASS approval view helpers › shows the executed after-values once executed
+PASS approval view helpers › shows live and projected balance for a wallet change
+PASS approval view helpers › explains why the requester cannot decide their own request (self-approval prevention)
+PASS approval view helpers › explains an unauthorised role and a stuck request
+PASS approval view helpers › formats missing money as an em dash
+PASS approval view helpers › reversalState: applied and partially reversed rows can be reversed; reversed or pending ones cannot
+PASS approval view helpers › a request flagged for manual verification explains it cannot be retried
+PASS sanitizeStyle — property allowlist (R-F11) › keeps ordinary formatting
+PASS sanitizeStyle — property allowlist (R-F11) › drops positioning / overlay properties but keeps the harmless ones next to them
+PASS sanitizeStyle — property allowlist (R-F11) › rejects url(), expression(), escapes, comments, @import in any form
+PASS sanitizeStyle — property allowlist (R-F11) › isSafeStyle is true only when nothing would be dropped
+PASS session notice (R9) › recognises only a 403 with code account_restricted
+PASS session notice (R9) › stores a notice and returns it exactly once
+PASS session notice (R9) › falls back to a default message and never throws without storage
+
+27 passed, 0 failed

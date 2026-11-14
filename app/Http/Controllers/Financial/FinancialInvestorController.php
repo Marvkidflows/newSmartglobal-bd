@@ -35,6 +35,9 @@ use Illuminate\Support\Facades\Gate;
 
 class FinancialInvestorController extends Controller
 {
+    use \App\Http\Controllers\Concerns\ReadsIdempotencyKey;
+    use \App\Http\Controllers\Concerns\RespondsWithApproval;
+
     public function __construct(
         protected FinancialAuditService $audit,
         protected FinancialNotificationService $financialNotifier,
@@ -174,51 +177,31 @@ class FinancialInvestorController extends Controller
         ]);
 
         $actor  = $request->user();
-        $amount = round((float) $validated['amount'], 2);
+        $svc    = app(\App\Services\Financial\BalanceAdjustmentService::class);
 
-        $result = DB::transaction(function () use ($user, $validated, $actor, $amount) {
-            $locked = User::where('id', $user->id)->where('role', 'investor')->lockForUpdate()->first();
-            if (!$locked) {
-                return ['error' => 'Investor not found.', 'code' => 404];
-            }
-
-            $before = (float) ($locked->balance ?? 0);
-
-            if ($validated['type'] === 'deduct' && $amount > $before) {
-                return ['error' => 'Cannot deduct more than the current balance.', 'code' => 422];
-            }
-
-            $after = $validated['type'] === 'add' ? $before + $amount : $before - $amount;
-            $locked->balance = $after;
-            $locked->save();
-
-            $adjustment = BalanceAdjustment::create([
-                'user_id'        => $locked->id,
-                'admin_id'       => $actor->id,
-                'type'           => $validated['type'],
-                'amount'         => $amount,
-                'balance_before' => $before,
-                'balance_after'  => $after,
-                'reason'         => $validated['reason'],
-            ]);
-
-            $log = $this->audit->record(
-                $actor, "wallet.{$validated['type']}", 'balance_adjustment', $adjustment->id, $locked->id,
-                ['balance' => $before], ['balance' => $after, 'amount' => $amount], $validated['reason']
-            );
-
-            return ['ok' => true, 'user' => $locked, 'adjustment' => $adjustment, 'log' => $log];
-        });
-
-        if (isset($result['error'])) {
-            return response()->json(['message' => $result['error']], $result['code']);
+        try {
+            // One policy entry point: self-adjustment refused, deduction validated against the locked CURRENT balance BEFORE any request exists (R3),
+            // single + cumulative thresholds decide between 202 (second approver, nothing moved) and immediate application.
+            $o = $svc->submitOrApply($actor, $user->id, $validated['type'], $validated['amount'], $validated['reason'], $this->idempotencyKeyFrom($request), true);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            $msg = collect($e->errors())->flatten()->first();
+            return response()->json(['message' => $msg, 'errors' => $e->errors()], $msg === 'Investor not found.' ? 404 : 422);
         }
 
-        $this->financialNotifier->balanceAdjusted(
-            $result['user']->id,
-            $result['user']->name ?? $result['user']->full_name ?? 'Investor',
-            $validated['type'], $amount, $actor->name
-        );
+        if ($o['mode'] === 'pending') {
+            return $this->approvalResponse($o['request'], $o['duplicate'], 'This adjustment requires a second approver. It has been submitted for approval and NO balance has been changed.');
+        }
+        $amount = (float) $o['adjustment']->amount;
+        $log = \App\Models\FinancialAuditLog::where('entity_type', 'balance_adjustment')->where('entity_id', $o['adjustment']->id)->latest('id')->first();
+        $result = ['ok' => true, 'user' => $o['user'], 'adjustment' => $o['adjustment'], 'log' => $log];
+
+        if (!$o['duplicate']) {
+            $this->financialNotifier->balanceAdjusted(
+                $result['user']->id,
+                $result['user']->name ?? $result['user']->full_name ?? 'Investor',
+                $validated['type'], $amount, $actor->name
+            );
+        }
 
         return response()->json([
             'message' => 'Balance adjustment applied successfully.',
@@ -232,7 +215,7 @@ class FinancialInvestorController extends Controller
                 'reason'         => $result['adjustment']->reason,
                 'admin_name'     => $actor->name,
                 'created_at'     => $result['adjustment']->created_at->toDateTimeString(),
-                'audit_reference'=> $result['log']->reference,
+                'audit_reference'=> $result['log']?->reference,
             ],
         ]);
     }
@@ -253,6 +236,7 @@ class FinancialInvestorController extends Controller
             'amount'            => ['nullable', 'numeric', 'min:0.01', 'max:1000000000'],
             'profit_percentage' => ['nullable', 'numeric', 'min:0', 'max:1000'],
             'reason'            => ['required', 'string', 'min:10', 'max:1000'],
+            'authorization_reference' => ['required', 'string', 'min:3', 'max:255'],      // R7: every correction names its authorisation
         ]);
 
         if (($validated['amount'] ?? null) === null && ($validated['profit_percentage'] ?? null) === null) {
@@ -260,65 +244,41 @@ class FinancialInvestorController extends Controller
         }
 
         $actor = $request->user();
+        $svc   = app(\App\Services\Financial\InvestmentCorrectionService::class);
 
-        $result = DB::transaction(function () use ($investment, $validated, $actor) {
-            $locked = InvestmentAccount::where('id', $investment->id)->lockForUpdate()->first();
-            $owner  = $locked ? User::find($locked->user_id) : null;
+        try {
+            $payload = $svc->prepare($investment->id,
+                isset($validated['amount']) ? (string) $validated['amount'] : null,
+                isset($validated['profit_percentage']) ? (string) $validated['profit_percentage'] : null,
+                $validated['reason'], $validated['authorization_reference']);
 
-            // Never trust the id alone: the owner must be a real investor account.
-            if (!$locked || !$owner || $owner->role !== 'investor') {
-                return ['error' => 'Investment record not found.', 'code' => 404];
+            if ($svc->requiresApproval()) {
+                // R7: nothing is written to the investment and nothing is recalculated until a DIFFERENT authorised person approves.
+                $o = app(\App\Services\Financial\FinancialApprovalService::class)->submitDetailed('investment_correction', $payload, $actor, $this->idempotencyKeyFrom($request));
+                return $this->approvalResponse($o['request'], $o['duplicate'], 'This correction requires a second approver. It has been submitted for approval and the investment record has NOT been changed.');
             }
-            if ($locked->status !== 'active' || $locked->is_paid) {
-                return ['error' => 'Only active, unpaid investment records can be corrected.', 'code' => 422];
-            }
-
-            $prev = $this->snapshot($locked);
-
-            $newAmount = isset($validated['amount']) ? round((float) $validated['amount'], 2) : (float) $locked->amount;
-            $newPct    = isset($validated['profit_percentage']) ? round((float) $validated['profit_percentage'], 2) : (float) $locked->profit_percentage;
-
-            if ($newAmount === (float) $locked->amount && $newPct === (float) $locked->profit_percentage) {
-                return ['error' => 'The corrected values are identical to the current record.', 'code' => 422];
-            }
-
-            $expected = round($newAmount * ($newPct / 100), 2);
-            $locked->update([
-                'amount'            => $newAmount,
-                'profit_percentage' => $newPct,
-                'expected_profit'   => $expected,
-                'total_return'      => round($newAmount + $expected, 2),
-            ]);
-
-            $new = $this->snapshot($locked->fresh());
-
-            $log = $this->audit->record(
-                $actor, 'investment.record_corrected', 'investment_account', $locked->id, $owner->id,
-                $prev, $new, $validated['reason']
-            );
-
-            return ['ok' => true, 'investment' => $locked->fresh('investmentPlan'), 'owner' => $owner, 'prev' => $prev, 'new' => $new, 'log' => $log];
-        });
-
-        if (isset($result['error'])) {
-            return response()->json(['message' => $result['error']], $result['code']);
+            // Only reachable when FIN_APPROVAL_INVESTMENT_CORRECTION / dual approval is explicitly switched off by configuration.
+            $res = $svc->execute($payload, $actor, null, null);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            $msg = collect($e->errors())->flatten()->first();
+            return response()->json(['message' => $msg, 'errors' => $e->errors()], $msg === 'Investment record not found.' ? 404 : 422);
         }
 
-        // Tell the investor their record changed (transparency).
-        $result['owner']->notify(new FinancialAlertNotification(
+        $fresh = InvestmentAccount::with('investmentPlan')->find($res['investment_id']);
+        User::find($res['owner_id'])?->notify(new FinancialAlertNotification(
             'Investment record updated',
             'The Financial Team corrected one of your investment records after a review. '
-            . 'Amount: $' . number_format($result['prev']['amount'], 2) . ' → $' . number_format($result['new']['amount'], 2) . '.',
-            'investment_correction',
-            ['investment_id' => $result['investment']->id]
+            . 'Amount: $' . number_format((float) $res['before']['amount'], 2) . ' → $' . number_format((float) $res['after']['amount'], 2) . '.',
+            'investment_correction', ['investment_id' => $res['investment_id']]
         ));
+        $f = fn (array $a) => array_map('floatval', $a);
 
         return response()->json([
             'message'         => 'Investment record corrected.',
-            'investment'      => $this->formatInvestment($result['investment']),
-            'previous_value'  => $result['prev'],
-            'new_value'       => $result['new'],
-            'audit_reference' => $result['log']->reference,
+            'investment'      => $this->formatInvestment($fresh),
+            'previous_value'  => $f($res['before']),
+            'new_value'       => $f($res['after']),
+            'audit_reference' => $res['audit_reference'],
         ]);
     }
 

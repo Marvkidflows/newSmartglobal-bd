@@ -28,42 +28,34 @@ class RegistrationEmailTest extends TestCase
         'password_confirmation' => 'password123',
     ];
 
-    /** A failing mail send should never be silently reported as a success. */
-    public function test_stage1_reports_email_sent_false_when_otp_send_fails(): void
+    // CONTRACT CHANGE (enumeration closure). The original tests asserted that stage 1 created the account and told the caller when the OTP email
+    // failed. Stage 1 now creates nothing and must answer identically in every case (a different answer for a failed send would reveal whether an
+    // address is registered). The honesty requirement is kept differently: a failed send is recorded, retires its code (never usable) and still
+    // counts toward the per-address cooldown/hourly cap, and the visitor can always request another code after the retry interval shown.
+
+    public function test_a_failed_code_email_looks_identical_to_a_successful_one_but_is_recorded_and_unusable(): void
     {
-        $this->app->bind(OtpService::class, function () {
-            return new class extends OtpService {
-                public function generateAndSend(User $user): void
-                {
-                    throw new \Exception('Brevo API error (simulated)');
-                }
-            };
-        });
+        \Illuminate\Support\Facades\Mail::shouldReceive('mailer')->andThrow(new \RuntimeException('Brevo API error (simulated)'));
 
         $response = $this->postJson('/api/register/stage1', $this->stage1Payload);
 
-        // The account itself still gets created — only the email failed.
-        $response->assertStatus(200);
-        $response->assertJson(['success' => true, 'email_sent' => false]);
-        $this->assertStringContainsString('could not send', strtolower($response->json('message')));
-        $this->assertDatabaseHas('users', ['email' => 'test.investor@example.com']);
+        $response->assertStatus(200)->assertJson(['success' => true, 'verification_required' => true, 'email_sent' => true]);
+        $this->assertDatabaseMissing('users', ['email' => 'test.investor@example.com']);
+        $row = \App\Models\RegistrationEmailChallenge::where('email', 'test.investor@example.com')->firstOrFail();
+        $this->assertSame('failed', $row->delivery_status);
+        $this->assertNotNull($row->consumed_at);
     }
 
-    public function test_stage1_reports_email_sent_true_when_otp_send_succeeds(): void
+    public function test_stage1_emails_a_code_and_creates_no_account_when_the_send_succeeds(): void
     {
-        $this->app->bind(OtpService::class, function () {
-            return new class extends OtpService {
-                public function generateAndSend(User $user): void
-                {
-                    // no-op — simulates a successful send without hitting Brevo
-                }
-            };
-        });
+        \Illuminate\Support\Facades\Mail::fake();
 
         $response = $this->postJson('/api/register/stage1', $this->stage1Payload);
 
-        $response->assertStatus(200);
-        $response->assertJson(['success' => true, 'email_sent' => true]);
+        $response->assertStatus(200)->assertJson(['success' => true, 'verification_required' => true, 'email_sent' => true]);
+        $response->assertJsonMissingPath('token');
+        \Illuminate\Support\Facades\Mail::assertSent(\App\Mail\RegistrationEmailCodeMail::class, fn ($m) => $m->hasTo('test.investor@example.com'));
+        $this->assertDatabaseMissing('users', ['email' => 'test.investor@example.com']);
     }
 
     /** Previously this threw an uncaught exception (raw 500). */

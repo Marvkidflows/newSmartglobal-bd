@@ -83,7 +83,7 @@ class FinancialTeamTest extends TestCase
 
     public function test_financial_user_can_view_and_approve_withdrawals(): void
     {
-        $this->investor->update(['balance' => 1000]);
+        $this->investor->forceFill(['balance' => 1000])->save();   // R2: balance is not mass-assignable (F-12)
         $withdrawal = Withdrawal::create([
             'user_id' => $this->investor->id, 'amount' => 200,
             'method' => 'bank_transfer', 'account_details' => json_encode(['bank_name' => 'Test']),

@@ -13,24 +13,24 @@ class DemoDataSeeder extends Seeder
     public function run()
     {
         // Create admin
-        $admin = User::create([
+        $admin = User::unguarded(fn () => User::create([
             'name' => 'System Admin',
             'email' => 'adminsystem@gmail.com',
             'password' => Hash::make('password@123'),
             'role' => 'admin',
             'tier' => 'starter', // tier is investment-plan concept; admin doesn't need 'admin' here — role already covers access
             'balance' => 0,
-        ]);
+        ]));
 
         // Create demo investor
-        $investor = User::create([
+        $investor = User::unguarded(fn () => User::create([
             'name' => 'Demo Investor',
             'email' => 'demo@investor.com',
             'password' => Hash::make('demo123'),
             'role' => 'investor',
             'tier' => 'elite',
             'balance' => 42850.50,
-        ]);
+        ]));
 
         // Create task types (required FK on shared_tasks — must exist first)
         $surveyType = TaskType::create([

@@ -97,4 +97,19 @@ return [
         'elite'    => ['min_amount' => 50000, 'band_max' => null,  'min_cycles' => 12],
     ],
 
+    // PROGRESS NOTICES (audit R-32 / R-33). Investor notifications built on the SAME verified calculation as the rank dashboard
+    // (InvestorRankProgress). Nothing is sent while the next rank's criteria are inactive, for the highest rank, or from unverified data.
+    //  • enabled      : master switch for the approaching-rank notice and for the "you meet the requirements" notice on every step
+    //                   except Bronze → Silver (that one stays behind the management-controlled benefit "bronze.next-rank-notice").
+    //  • milestones   : percentages of progress at which an "approaching" notice is sent (comma-separated in .env). Progress is the LOWER of the
+    //                   money bar and the cycle bar, so both requirements must be close. 100% is not a milestone: meeting the requirements
+    //                   is announced by the eligibility notice, not by this one.
+    //  • rearm_buffer_percent : after a notice, progress must fall this many points BELOW the milestone before it can be sent again
+    //                   (stops a notice repeating when a figure hovers around the line).
+    'progress_notices' => [
+        'enabled'              => (bool) env('RANKS_PROGRESS_NOTICES_ENABLED', true),
+        'milestones'           => array_values(array_filter(array_map('intval', explode(',', (string) env('RANKS_APPROACHING_MILESTONES', '75,90'))))),
+        'rearm_buffer_percent' => (int) env('RANKS_APPROACHING_REARM_BUFFER', 5),
+        'chunk'                => (int) env('RANKS_PROGRESS_NOTICE_CHUNK', 100),
+    ],
 ];

@@ -192,8 +192,10 @@ class AdminDepositController extends Controller
                     if ($plan) {
                         $durationDays = $plan->duration_days ?? ($plan->duration_months ?? 1) * 30;
                         $profitPct    = (float) ($plan->profit_percentage ?? 0);
-                        $expectedProfit = $locked->amount * ($profitPct / 100);
-                        $totalReturn    = $locked->amount + $expectedProfit;
+                        // Exact decimal (was float × float): amount × % ÷ 100, half-up at 2 dp. Only differs from the old float result in the rare
+                        // cent-boundary cases where binary floating point rounded the wrong way. See DECIMAL_MIGRATION_REPORT.md (patch 03).
+                        $expectedProfit = \App\Support\Decimal::percentOf(\App\Support\Decimal::money($locked->amount), \App\Support\Decimal::fromInput($plan->profit_percentage ?? 0));
+                        $totalReturn    = \App\Support\Decimal::add(\App\Support\Decimal::money($locked->amount), $expectedProfit);
 
                         $createdInvestment = \App\Models\InvestmentAccount::create([
                             'source_deposit_id'  => $locked->id,
