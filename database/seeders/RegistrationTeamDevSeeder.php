@@ -5,6 +5,8 @@
 //
 // Safety properties (each is covered by tests/Feature/Registration/RegistrationDevSeederTest.php):
 //   * Runs only when APP_ENV is local / development / testing. production, staging and unknown environments are refused.
+//   * ALSO refuses when the configured database is not on this machine (a remote / hosted / shared host such as a Railway proxy), even if APP_ENV says
+//     'local'. A developer .env that copies the production database settings but keeps APP_ENV=local must never be able to create an account in the live database.
 //   * Creates only a registration_member or registration_lead account, never admin, financial, marvflow or investor.
 //   * Holds exactly the permissions of the existing Registration roles (the existing role checks / Gates); it grants nothing extra and
 //     does not touch the mailing/news permission tables.
@@ -33,6 +35,7 @@ class RegistrationTeamDevSeeder extends Seeder
         $cfg = (array) config('registration_dev_seed');
 
         $this->assertDevelopmentEnvironment($cfg);
+        $this->assertLocalDatabase();
 
         $email    = strtolower(trim((string) ($cfg['email'] ?? '')));
         $name     = trim((string) ($cfg['name'] ?? '')) ?: 'Registration Test Member';
@@ -78,6 +81,32 @@ class RegistrationTeamDevSeeder extends Seeder
         $allowed = (array) ($cfg['allowed_environments'] ?? []);
         if ($allowed === [] || !app()->environment($allowed)) {
             throw new RuntimeException('Refusing to run: this seeder is for local development only (APP_ENV must be one of: ' . implode(', ', $allowed) . '). Current APP_ENV: ' . app()->environment() . '. No account was created.');
+        }
+    }
+
+    /** True for a database host that is this machine (or a bare Docker/compose service name). Anything with a real domain or an IP address is "remote". */
+    public static function isLocalDatabaseHost(?string $host): bool
+    {
+        $host = strtolower(trim((string) $host, " \t\n\r\0\x0B[]"));
+        if ($host === '' || str_starts_with($host, '/')) return true;          // no host / unix socket
+        if (in_array($host, ['localhost', '127.0.0.1', '::1', '0.0.0.0', 'host.docker.internal'], true)) return true;
+        foreach (['.test', '.local', '.localhost'] as $suffix) {
+            if (str_ends_with($host, $suffix)) return true;
+        }
+        return !str_contains($host, '.') && !str_contains($host, ':');         // e.g. the compose service name "mysql"
+    }
+
+    private function assertLocalDatabase(): void
+    {
+        $name = (string) config('database.default');
+        $conn = (array) config("database.connections.$name");
+        if (($conn['driver'] ?? '') === 'sqlite') return;                       // file / in-memory database: always local
+
+        $host = $conn['host'] ?? '';
+        if (!empty($conn['url'])) $host = (string) (parse_url((string) $conn['url'], PHP_URL_HOST) ?: $host);
+
+        if (!self::isLocalDatabaseHost((string) $host)) {
+            throw new RuntimeException('Refusing to run: the configured database is not on this machine (it looks like a remote or hosted database), even though APP_ENV allows development. This seeder never writes to a shared or live database. Point DB_HOST at a local development database and try again. No account was created.');
         }
     }
 

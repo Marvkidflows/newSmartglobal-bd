@@ -56,6 +56,19 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Frontend URL
+    |--------------------------------------------------------------------------
+    |
+    | Public address of the WEBSITE that users see (hosted separately from this API). It is used to build the links placed inside e-mails:
+    | password reset, "Contact Support" and referral links. Set FRONTEND_URL on the backend host. This key did not exist before, so those
+    | links were being built WITHOUT a domain (and the FRONTEND_URL variable was never read).
+    |
+    */
+
+    'frontend_url' => env('FRONTEND_URL', 'https://smartsysteminvestmentglobal.com'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Application Timezone
     |--------------------------------------------------------------------------
     |

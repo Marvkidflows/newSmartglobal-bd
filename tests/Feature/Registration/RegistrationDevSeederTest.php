@@ -126,6 +126,45 @@ class RegistrationDevSeederTest extends TestCase
         $this->assertSame($hash, $this->seeded()->password);
     }
 
+    public function test_it_refuses_a_remote_database_even_when_app_env_says_local(): void
+    {
+        $originalDefault = config('database.default');
+        try {
+            foreach (['abc123.proxy.rlwy.net', 'mysql.railway.internal', '203.0.113.7', 'db.example.com', '10.0.0.5'] as $host) {
+                config(['database.default' => 'remote_test', 'database.connections.remote_test' => ['driver' => 'mysql', 'host' => $host]]);
+                [$refused, $message] = $this->runSeeder();
+
+                $this->assertTrue($refused, "a database at '{$host}' must be refused");
+                $this->assertStringContainsString('not on this machine', $message);
+            }
+        } finally {
+            config(['database.default' => $originalDefault]);   // the test database transaction is rolled back on the ORIGINAL connection
+        }
+        $this->assertSame(0, User::where('email', self::EMAIL)->count(), 'no account may be created on a remote database');
+    }
+
+    public function test_a_database_url_pointing_at_a_remote_host_is_refused_too(): void
+    {
+        $originalDefault = config('database.default');
+        try {
+            config(['database.default' => 'remote_test', 'database.connections.remote_test' => ['driver' => 'mysql', 'host' => '127.0.0.1', 'url' => 'mysql://u:p@abc123.proxy.rlwy.net:31332/db']]);
+            [$refused] = $this->runSeeder();
+            $this->assertTrue($refused);
+        } finally {
+            config(['database.default' => $originalDefault]);
+        }
+    }
+
+    public function test_local_database_hosts_are_recognised_and_remote_ones_are_not(): void
+    {
+        foreach (['localhost', '127.0.0.1', '::1', '[::1]', 'host.docker.internal', 'mysql', 'db', 'ssi.test', 'dev.local', '', null, '/var/run/mysqld/mysqld.sock'] as $local) {
+            $this->assertTrue(RegistrationTeamDevSeeder::isLocalDatabaseHost($local), 'should be local: ' . var_export($local, true));
+        }
+        foreach (['abc123.proxy.rlwy.net', 'mysql.railway.internal', 'db.example.com', '203.0.113.7', '192.168.1.20', 'sub.domain.io'] as $remote) {
+            $this->assertFalse(RegistrationTeamDevSeeder::isLocalDatabaseHost($remote), 'should be remote: ' . $remote);
+        }
+    }
+
     public function test_it_can_only_ever_assign_registration_roles(): void
     {
         foreach (['admin', 'financial', 'marvflow_member', 'marvflow_lead', 'investor', '', 'registration_admin'] as $role) {

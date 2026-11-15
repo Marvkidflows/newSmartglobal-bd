@@ -1,0 +1,16 @@
+# LOCATION: .dockerignore   (NEW FILE, project root next to Dockerfile)
+# The Dockerfile does `COPY . .`, and there was NO .dockerignore, so every file in the build folder went into the deployed image, including
+# .env files and backups that hold live credentials. These entries keep secrets, version control data and junk out of the image.
+# Nothing the application needs at run time is excluded (vendor/ is rebuilt inside the image by `composer install`; it is intentionally NOT listed here).
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+*.bak
+*.zip
+node_modules
+storage/logs/*
+npm-debug.log
+.idea
+.vscode

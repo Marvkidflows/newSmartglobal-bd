@@ -51,6 +51,7 @@ It is intentionally **not** in `DatabaseSeeder`, so `migrate --seed` can never c
 ## 6. What the seeder refuses (all covered by `RegistrationDevSeederTest`)
 
 * `APP_ENV` other than local / development / testing (production, staging, unknown).
+* **A database that is not on this machine.** If `DB_HOST` is a hosted/remote address (for example a Railway proxy host), the seeder refuses even when `APP_ENV=local`, so a developer `.env` copied from production can never create an account in the live database. Use a local database for development.
 * Any role other than `registration_member` / `registration_lead`.
 * A missing or shorter-than-12-character `DEV_REGISTRATION_TEST_PASSWORD`.
 * An e-mail that is not on a reserved test domain.
