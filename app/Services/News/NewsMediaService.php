@@ -10,6 +10,7 @@ namespace App\Services\News;
 
 use App\Models\News\NewsMedia;
 use App\Models\User;
+use App\Support\DiskWriter;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -20,6 +21,39 @@ class NewsMediaService
     protected function fail(string $msg): never
     {
         throw ValidationException::withMessages(['file' => $msg]);
+    }
+
+    /**
+     * Writes image bytes to the configured disk and FAILS LOUDLY if the disk did not accept them.
+     * Goes through DiskWriter (a real temp file) because the Cloudinary disk rejects both a raw byte string (treated as a file PATH) and an in-memory
+     * stream (sent without a filename). put() can also return false without throwing, which previously let a database row be created for a file that
+     * was never stored.
+     */
+    protected function writeBytes(string $rel, string $bytes): void
+    {
+        $ok = false;
+        try {
+            $ok = DiskWriter::put((string) config('news.disk'), $rel, $bytes);
+        } catch (\Throwable $e) {
+            report($e);
+        }
+        if (!$ok) $this->fail('The file could not be saved. Please try again.');
+    }
+
+    /** Same guarantee for an uploaded file (video): no database row unless the disk confirms the write. PHP's own upload temp file has no extension, so it also goes through DiskWriter. */
+    protected function writeFile(string $rel, UploadedFile $file): void
+    {
+        $ok = false;
+        $in = null;
+        try {
+            $in = fopen($file->getRealPath(), 'rb');
+            $ok = $in !== false && DiskWriter::put((string) config('news.disk'), $rel, $in);
+        } catch (\Throwable $e) {
+            report($e);
+        } finally {
+            if (is_resource($in)) fclose($in);
+        }
+        if (!$ok) $this->fail('The file could not be saved. Please try again.');
     }
 
     protected function autoApproved(User $u): bool
@@ -51,7 +85,7 @@ class NewsMediaService
 
         $name = Str::random(40) . '.' . $mimes[$mime];
         $rel = trim(config('news.directory'), '/') . '/' . date('Y/m') . '/' . $name;
-        Storage::disk(config('news.disk'))->put($rel, $bytes);
+        $this->writeBytes($rel, $bytes);
 
         return NewsMedia::create([
             'kind' => 'image', 'disk' => config('news.disk'), 'path' => $rel, 'original_name' => Str::limit(basename($file->getClientOriginalName()), 180, ''),
@@ -84,7 +118,7 @@ class NewsMediaService
 
         $name = Str::random(40) . '.' . $mimes[$mime];
         $rel = trim(config('news.directory'), '/') . '/' . date('Y/m') . '/' . $name;
-        Storage::disk(config('news.disk'))->putFileAs(dirname($rel), $file, basename($rel));
+        $this->writeFile($rel, $file);
 
         return NewsMedia::create([
             'kind' => 'video_file', 'disk' => config('news.disk'), 'path' => $rel, 'original_name' => Str::limit(basename($file->getClientOriginalName()), 180, ''),
