@@ -54,7 +54,12 @@ case "$ROLE" in
     # F-05: migrations are NOT run here. Startup is gated on a READ-ONLY schema check instead (see schema_gate above).
     schema_gate
 
-    echo "Starting PHP server..."
+    # PHP's built-in server handles ONE request at a time by default, so a single slow call (Brevo, CoinPaprika, football-data...) made every
+    # other visitor wait. PHP_CLI_SERVER_WORKERS makes it fork several workers so requests run in parallel. Tune with the PHP_CLI_SERVER_WORKERS
+    # variable on Railway (default 4; each worker uses memory, see php-memory.ini). NOTE: PHP documents the built-in server as a development
+    # server; a proper production server (FrankenPHP, or Nginx + PHP-FPM) is the longer-term fix and needs its own build and test.
+    export PHP_CLI_SERVER_WORKERS="${PHP_CLI_SERVER_WORKERS:-4}"
+    echo "Starting PHP server (${PHP_CLI_SERVER_WORKERS} workers)..."
     exec php -S 0.0.0.0:${PORT:-8000} -t public
     ;;
 
