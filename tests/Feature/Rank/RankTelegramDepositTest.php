@@ -89,6 +89,8 @@ class RankTelegramDepositTest extends RankTestCase
 
     public function test_investor_starts_a_deposit_and_gets_the_telegram_agent_link_but_nothing_is_paid_or_approved(): void
     {
+        // The deployment-wide representative is now configured explicitly (there is no built-in default username any more).
+        config(['services.telegram.agent_username' => 'ssi_rep_demo']);
         $u = $this->investor();
         $res = $this->actingAs($u, 'sanctum')->postJson('/api/investor-investment/investor/deposits/initiate', ['investment_plan_id' => $this->plan->id, 'amount' => 500])->assertCreated();
 

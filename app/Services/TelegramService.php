@@ -74,7 +74,7 @@ public function newDeposit(string $investorName, float $amount, string $referenc
 {
     $this->notify(
         "💰 <b>New Deposit Request</b>\n\n" .
-        "👤 <b>Investor:</b> {$investorName}\n" .
+        "👤 <b>Investor:</b> " . e($investorName) . "\n" .
         "💵 <b>Amount:</b> $" . number_format($amount, 2) . "\n" .
         "🔖 <b>Reference:</b> <code>{$reference}</code>\n" .
         "🕐 <b>Time:</b> " . now()->format('Y-m-d H:i') . "\n\n" .
@@ -191,6 +191,49 @@ public function newDeposit(string $investorName, float $amount, string $referenc
         return false;
     }
 }
+    /**
+     * Like sendMessage(), but returns true ONLY when Telegram itself answered ok:true. Used where the caller must not
+     * claim delivery that did not happen (agent notification). Never throws; never logs the token or the message.
+     */
+    public function sendMessageConfirmed(int|string $chatId, string $message): bool
+    {
+        if (!$this->token) {
+            Log::warning('Telegram bot token is not configured.');
+            return false;
+        }
+        try {
+            $response = Http::timeout(10)->post("https://api.telegram.org/bot{$this->token}/sendMessage", [
+                'chat_id' => $chatId, 'text' => $message, 'parse_mode' => 'HTML',
+            ]);
+            if (!$response->successful() || $response->json('ok') !== true) {
+                Log::warning('Telegram agent message not confirmed.', ['status' => $response->status()]);
+                return false;
+            }
+            return true;
+        } catch (\Throwable $e) {
+            Log::warning('Telegram agent message exception.', ['error' => $this->safeError($e)]);
+            return false;
+        }
+    }
+
+    /**
+     * Tell ONE specific Financial Team agent about a new deposit request. Contains only what the agent needs to match
+     * the payment: reference, investor name + account id, plan, the intended USD amount. No balances, emails,
+     * phone numbers, payment details or proof. Returns true only if Telegram confirmed delivery.
+     */
+    public function notifyAssignedAgentOfDeposit(string $chatId, string $investorName, string $accountId, string $planName, float $amount, string $reference): bool
+    {
+        return $this->sendMessageConfirmed($chatId,
+            "💰 <b>New deposit request (PENDING)</b>\n\n" .
+            "👤 <b>Investor:</b> " . e($investorName) . " (" . e($accountId) . ")\n" .
+            "📦 <b>Plan:</b> " . e($planName) . "\n" .
+            "💵 <b>Intended amount:</b> $" . number_format($amount, 2) . " (US-dollar value, unverified)\n" .
+            "🔖 <b>Reference:</b> <code>" . e($reference) . "</code>\n\n" .
+            "The investor is being connected to you on Telegram. Nothing has been paid or approved; " .
+            "approval is done only in the SSI Financial dashboard."
+        );
+    }
+
 public function forwardInvestorMessage(
     ?int $telegramUserId,
     int|string $chatId,

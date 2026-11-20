@@ -8,10 +8,14 @@ use App\Models\Deposit;
 use App\Models\InvestmentPlan;
 use App\Services\TelegramService;
 use App\Services\DepositPaymentService;
+use App\Services\DepositAgentResolver;
 use App\Services\Rank\CurrencyCatalog;
 use App\Services\FinancialNotificationService;
 use Illuminate\Http\Request;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 class InvestorDepositController extends Controller
@@ -64,13 +68,15 @@ class InvestorDepositController extends Controller
             ->get(['id', 'name', 'min_amount', 'max_amount', 'profit_percentage', 'duration_days']);
 
         if ($request->expectsJson()) {
-            return response()->json(['plans' => $plans, 'agent' => $this->getAgent()]);
+            return response()->json(['plans' => $plans, 'agent' => $this->agentPayload(Auth::user())]);
         }
         return view('investor.deposits.create', compact('plans'));
     }
 
     // POST /investor-investment/investor/deposits/initiate
-    // Called after Stage 1 — creates deposit, generates reference, fires Telegram to agent immediately
+    // The investor's submission. Saves a PENDING deposit (nothing is paid, approved, credited or invested here), resolves the
+    // investor's OWN Telegram contact server-side, notifies staff, and returns what the frontend needs to open Telegram.
+    // Idempotent: the same `idempotency_key` from the same investor always returns the same deposit and never notifies twice.
     public function initiate(Request $request)
     {
         $user = Auth::user();
@@ -78,7 +84,14 @@ class InvestorDepositController extends Controller
         $validated = $request->validate([
             'investment_plan_id' => ['required', 'exists:investment_plans,id'],
             'amount'             => ['required', 'numeric', 'min:1'],
+            'idempotency_key'    => ['nullable', 'string', 'regex:/^[A-Za-z0-9_-]{16,64}$/'],
         ]);
+        $key = $validated['idempotency_key'] ?? null;
+
+        // A retry of an already-saved submission: return it, do nothing else.
+        if ($key && ($existing = $this->findByKey($user->id, $key))) {
+            return $this->depositResponse($existing, $user, true);
+        }
 
         $plan = InvestmentPlan::findOrFail($validated['investment_plan_id']);
 
@@ -94,55 +107,57 @@ class InvestorDepositController extends Controller
             ], 422);
         }
 
-        // Generate reference immediately
         $reference = 'DEP-' . now()->year . '-' . strtoupper(Str::random(8));
 
-        // Create deposit record right away (no payment method yet)
-        $deposit = Deposit::create([
-            'user_id'               => $user->id,
-            'investment_plan_id'    => $plan->id,
-            'amount'                => $validated['amount'],
-            'payment_method'        => 'pending', // will be updated at confirm step
-            'transaction_reference' => $reference,
-            'status'                => 'pending',
-        ]);
+        try {
+            // Deposit + its pending ledger entry are saved together, so a deposit is never left without its audit entry.
+            $deposit = DB::transaction(function () use ($user, $plan, $validated, $reference, $key) {
+                $deposit = Deposit::create([
+                    'user_id'               => $user->id,
+                    'investment_plan_id'    => $plan->id,
+                    'amount'                => $validated['amount'],
+                    'payment_method'        => 'pending', // updated at the confirm step
+                    'transaction_reference' => $reference,
+                    'status'                => 'pending', // ALWAYS pending here; only the existing approval flow changes it
+                    'idempotency_key'       => $key,
+                ]);
 
-        // Financial Team §1B: a declared, not-yet-cleared deposit is its own ledger classification (no money has moved).
-        app(\App\Services\Ledger\WalletLedger::class)->record([
-            'entry_key' => "deposit:{$deposit->id}:pending", 'user_id' => $user->id, 'classification' => 'pending_deposit', 'direction' => 'info',
-            'amount' => $validated['amount'], 'deposit_id' => $deposit->id, 'reference' => $reference, 'actor_id' => $user->id, 'actor_name' => $user->name ?? 'Investor',
-            'note' => 'Deposit declared; awaiting verification of receipt and clearance',
-        ]);
+                // Financial Team §1B: a declared, not-yet-cleared deposit is its own ledger classification (no money has moved).
+                app(\App\Services\Ledger\WalletLedger::class)->record([
+                    'entry_key' => "deposit:{$deposit->id}:pending", 'user_id' => $user->id, 'classification' => 'pending_deposit', 'direction' => 'info',
+                    'amount' => $validated['amount'], 'deposit_id' => $deposit->id, 'reference' => $reference, 'actor_id' => $user->id, 'actor_name' => $user->name ?? 'Investor',
+                    'note' => 'Deposit declared; awaiting verification of receipt and clearance',
+                ]);
 
-        // Fire Telegram to agent immediately so agent knows to expect this payment
-       
-// With this:
-$name = $user->name
-     ?? $user->full_name
-     ?? trim(($user->first_name ?? '') . ' ' . ($user->last_name ?? ''))
-     ?: 'Investor';
+                return $deposit;
+            });
+        } catch (QueryException $e) {
+            // Two identical submissions raced: the UNIQUE (user_id, idempotency_key) index let only one through.
+            if ($key && ($existing = $this->findByKey($user->id, $key))) {
+                return $this->depositResponse($existing, $user, true);
+            }
+            throw $e;
+        }
 
-$agent = $this->getAgent($name, (float) $deposit->amount, $reference);
-$this->telegram->newDeposit($name, (float) $deposit->amount, $reference);
+        // ── From here the deposit is saved. Nothing below may turn it into an error for the investor. ──
+        $name = $this->investorName($user);
 
-// In-app Financial Team alert. Unlike TelegramService::notify(), this
-// has no internal try/catch, so a failure here (e.g. notifications
-// table not migrated yet on this environment) must never be allowed
-// to turn an otherwise-successful deposit into a 500 for the investor
-// — the deposit row above is already committed by this point.
-try {
-    $this->financialNotifier->newDeposit($deposit->id, $name, (float) $deposit->amount);
-} catch (\Throwable $e) {
-    \Illuminate\Support\Facades\Log::warning('Financial team deposit notification failed: ' . $e->getMessage());
-}
+        try {
+            $this->telegram->newDeposit($name, (float) $deposit->amount, $reference);   // existing staff-chat alert (fails silently)
+        } catch (\Throwable $e) {
+            Log::warning('Staff Telegram deposit alert failed: ' . get_class($e));
+        }
 
-        return response()->json([
-            'deposit_id' => $deposit->id,
-            'reference'  => $reference,
-            'plan_name'  => $plan->name,
-            'amount'     => (float) $deposit->amount,
-            'agent'      => $agent,
-        ], 201);
+        // In-app Financial Team alert (no internal try/catch, e.g. notifications table not migrated yet).
+        try {
+            $this->financialNotifier->newDeposit($deposit->id, $name, (float) $deposit->amount);
+        } catch (\Throwable $e) {
+            Log::warning('Financial team deposit notification failed: ' . $e->getMessage());
+        }
+
+        $notified = $this->notifyAssignedAgent($deposit, $user, $plan->name ?? 'Plan', $name);
+
+        return $this->depositResponse($deposit->fresh() ?? $deposit, $user, false, $notified, $plan->name);
     }
 
     // PUT /investor-investment/investor/deposits/{deposit}/confirm
@@ -224,11 +239,7 @@ try {
                 'created_at'   => $deposit->created_at->toDateString(),
                 'processed_at' => optional($deposit->processed_at)->toDateString(),
             ],
-           'agent' => $this->getAgent(
-    $deposit->user->name ?? $deposit->user->full_name ?? 'Investor',
-    (float) $deposit->amount,
-    $deposit->transaction_reference
-),
+            'agent' => $this->agentPayload($deposit->user, $deposit->transaction_reference),
         ];
 
         if ($request->expectsJson()) {
@@ -237,20 +248,65 @@ try {
         return view('investor.deposits.show', $data);
     }
 
-       protected function getAgent(?string $investorName = null, ?float $amount = null, ?string $reference = null): array
+    // ── helpers ───────────────────────────────────────────────────────────
+
+    protected function investorName($user): string
     {
-        $username = config('services.telegram.agent_username', 'AgentlanFrank');
-        $link = 'https://t.me/' . ltrim($username, '@');
+        return $user->name
+            ?? $user->full_name
+            ?: (trim(($user->first_name ?? '') . ' ' . ($user->last_name ?? '')) ?: 'Investor');
+    }
 
-        if ($investorName && $amount !== null && $reference) {
-            $message = "Hi, I'm {$investorName}. Reference: {$reference}. I want to deposit $" . number_format($amount, 2) . '.';
-            $link .= '?text=' . rawurlencode($message);
+    protected function findByKey(int $userId, string $key): ?Deposit
+    {
+        return Deposit::where('user_id', $userId)->where('idempotency_key', $key)->first();
+    }
+
+    /** The investor's own Telegram contact as the public API may show it: name + link only (never a chat id). */
+    protected function agentPayload($user, ?string $reference = null): ?array
+    {
+        $resolver = app(DepositAgentResolver::class);
+        $resolved = $resolver->resolve($user);
+        if (!$resolved) return null;
+        return $reference
+            ? $resolver->publicShape($resolved, $this->investorName($user), $reference)
+            : ['name' => $resolved['name'], 'link' => 'https://t.me/' . $resolved['username']];
+    }
+
+    /**
+     * DM the investor's ASSIGNED agent (only possible when that agent's chat id is stored). Returns true only if Telegram
+     * confirmed delivery; a failure is logged and never affects the saved deposit.
+     */
+    protected function notifyAssignedAgent(Deposit $deposit, $user, string $planName, string $name): bool
+    {
+        if ($deposit->agent_notified_at) return false; // already notified once: never twice
+        try {
+            $resolved = app(DepositAgentResolver::class)->resolve($user);
+            if (!$resolved || $resolved['source'] !== 'assigned' || empty($resolved['chat_id'])) return false;
+
+            $sent = $this->telegram->notifyAssignedAgentOfDeposit(
+                $resolved['chat_id'], $name, $user->account_id, $planName, (float) $deposit->amount, $deposit->transaction_reference
+            );
+            if ($sent) $deposit->forceFill(['agent_notified_at' => now()])->save();
+            return $sent;
+        } catch (\Throwable $e) {
+            Log::warning('Assigned-agent Telegram notification failed: ' . get_class($e));
+            return false;
         }
+    }
 
-        return [
-            'name'     => config('services.telegram.agent_name', 'AgentlanFrank'),
-            'username' => $username,
-            'link'     => $link,
-        ];
+    protected function depositResponse(Deposit $deposit, $user, bool $duplicate, bool $notified = false, ?string $planName = null)
+    {
+        $agent = $this->agentPayload($user, $deposit->transaction_reference);
+        return response()->json([
+            'deposit_id'     => $deposit->id,
+            'reference'      => $deposit->transaction_reference,
+            'plan_name'      => $planName ?? $deposit->investmentPlan->name ?? null,
+            'amount'         => (float) $deposit->amount,
+            'status'         => $deposit->status,
+            'agent'          => $agent,                                  // null => frontend shows the "details unavailable" fallback
+            'agent_notified' => $duplicate ? (bool) $deposit->agent_notified_at : $notified,   // true only when Telegram confirmed
+            'duplicate'      => $duplicate,
+        ], $duplicate ? 200 : 201);
     }
 }

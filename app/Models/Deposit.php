@@ -25,6 +25,8 @@ class Deposit extends Model
         // Actual-payment record (written only by DepositPaymentService / the investor's declaration at confirm).
         'paid_amount', 'paid_currency', 'fx_rate', 'rate_source', 'rate_date', 'approved_amount',
         'external_reference', 'funding_channel', 'payment_note', 'payment_verified_by', 'payment_verified_at', 'payment_date', 'amount_difference_acknowledged',
+        // Telegram connection (Stage 1): written only by InvestorDepositController, never from request data.
+        'idempotency_key', 'agent_notified_at',
     ];
 
     protected $casts = [
@@ -37,6 +39,7 @@ class Deposit extends Model
         'rate_date'    => 'date',
         'payment_date' => 'date',
         'amount_difference_acknowledged' => 'boolean',
+        'agent_notified_at' => 'datetime',
         'payment_verified_at' => 'datetime',
     ];
 
