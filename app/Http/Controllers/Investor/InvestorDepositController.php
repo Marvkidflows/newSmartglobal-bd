@@ -44,7 +44,6 @@ class InvestorDepositController extends Controller
                 'reference'   => $d->transaction_reference,
                 'plan_name'   => $d->investmentPlan->name ?? null,
                 'status'      => $d->status,
-                'admin_notes' => $d->admin_notes,
                 'created_at'  => $d->created_at->toDateString(),
             ]);
 
@@ -235,7 +234,6 @@ class InvestorDepositController extends Controller
                 'reference'    => $deposit->transaction_reference,
                 'plan_name'    => $deposit->investmentPlan->name ?? null,
                 'status'       => $deposit->status,
-                'admin_notes'  => $deposit->admin_notes,
                 'created_at'   => $deposit->created_at->toDateString(),
                 'processed_at' => optional($deposit->processed_at)->toDateString(),
             ],

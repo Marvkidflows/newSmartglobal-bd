@@ -1,0 +1,8 @@
+# EXAMPLE ONLY — NOT ACTIVE. Copy to "Procfile" (or create the equivalent separate services on the host) ONLY after reading docs/DEPLOY_WORKER_AND_SCHEDULER.md
+# and after the owner has approved starting each process. Starting these is a deployment decision; nothing in this repository starts them.
+#
+# web:       how the app is already served (see Dockerfile / docker-entrypoint.sh) — shown for completeness
+# worker:    sends queued e-mail and rank alerts. Exactly ONE or more identical workers; safe to run several (jobs are claimed from the database queue).
+# scheduler: runs routes/console.php. Run EXACTLY ONE of these. Jobs that pay money are additionally gated (see the doc).
+worker: php artisan queue:work --queue=default --tries=3 --backoff=30 --max-time=3600 --sleep=3
+scheduler: php artisan schedule:work

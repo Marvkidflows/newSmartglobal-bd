@@ -30,7 +30,7 @@ class InvestmentSettlementService
     {
         $id = $investment instanceof InvestmentAccount ? $investment->id : $investment;
 
-        $result = DB::transaction(function () use ($id) {
+        $result = DB::transaction(function () use ($id, $source, $actorId) {
             $locked = InvestmentAccount::query()->whereKey($id)->lockForUpdate()->first();
 
             if (!$locked) {
@@ -42,12 +42,31 @@ class InvestmentSettlementService
 
             // F-13: exact decimal (string) all the way to the SQL increment; no float is added to a balance.
             $profit = \App\Support\Decimal::money($locked->expected_profit ?? 0);
+
+            // Fail closed (same rule as D-06 for withdrawals): if profit is due but the investor row is missing, do NOT mark the position completed,
+            // because that would record a paid cycle that credited nobody. Nothing is written; the position stays active for a human to investigate.
+            if (!\App\Support\Decimal::eq($profit, '0') && !User::query()->whereKey($locked->user_id)->lockForUpdate()->exists()) {
+                return ['completed' => false, 'credited' => 0.0, 'reason' => 'missing_user', 'user_id' => $locked->user_id];
+            }
             $locked->update(['status' => 'completed']);
 
             if (!\App\Support\Decimal::eq($profit, '0')) {
                 $user = User::query()->whereKey($locked->user_id)->lockForUpdate()->first();
                 if ($user) {
+                    $balanceBefore = \App\Support\Decimal::money($user->balance);
                     $user->increment('balance', $profit);
+                    // Traceability while the ledger is OFF: an append-only audit row in the SAME transaction (nothing else records this credit).
+                    // It is deliberately NOT a BalanceAdjustment, so the investor's wallet history is not double counted.
+                    $actor = $actorId ? User::query()->find($actorId) : null;
+                    \App\Models\FinancialAuditLog::create([
+                        'reference' => 'FAL-' . strtoupper(\Illuminate\Support\Str::random(10)), 'actor_id' => $actor?->id,
+                        'actor_name' => $actor ? ($actor->name ?? $actor->full_name ?? 'Staff') : 'System (maturity scheduler)', 'actor_role' => $actor?->role ?? 'system',
+                        'department' => $actor ? ($actor->role === 'financial' ? 'financial' : 'admin') : 'system', 'action' => 'investment.profit_credited',
+                        'entity_type' => 'investment_account', 'entity_id' => $locked->id, 'investor_id' => $user->id,
+                        'previous_value' => ['status' => 'active', 'balance' => $balanceBefore],
+                        'new_value' => ['status' => 'completed', 'profit_credited' => $profit, 'balance' => \App\Support\Decimal::add($balanceBefore, $profit), 'source' => $source],
+                        'reason' => 'Profit credited at cycle completion; principal is not credited by this step.',
+                    ]);
                     // Financial Team §1B: the profit credited at completion is its own classification. Principal is NOT credited here.
                     app(\App\Services\Ledger\WalletLedger::class)->record([
                         'entry_key' => "settle:{$locked->id}:profit", 'user_id' => $user->id, 'classification' => 'profit_credit', 'direction' => 'credit',

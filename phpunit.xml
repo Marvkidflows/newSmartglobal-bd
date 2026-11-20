@@ -18,7 +18,9 @@
         </include>
     </source>
     <php>
-        <env name="APP_ENV" value="testing"/>
+        <!-- D-16: forced. A shell or CI that already exports APP_ENV=production (the old .env.example shipped it) must not leak into the suite: the rank loader, demo seeder
+             and similar dev tools correctly refuse in production, which made every test that expects them to run fail. -->
+        <env name="APP_ENV" value="testing" force="true"/>
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="BROADCAST_CONNECTION" value="null"/>

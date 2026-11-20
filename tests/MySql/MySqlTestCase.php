@@ -15,6 +15,11 @@ abstract class MySqlTestCase extends TestCase
     {
         if (getenv('SSI_MYSQL_CONCURRENCY') !== '1') $this->markTestSkipped('Set SSI_MYSQL_CONCURRENCY=1 and use phpunit.mysql.xml (see file header).');
         if (!str_contains((string) getenv('DB_DATABASE'), 'test')) $this->markTestSkipped('Refusing: DB_DATABASE must contain "test".');
+        // D-07: these tests truncate and rewrite every table (DatabaseMigrations) and fire real parallel requests. The name check above is not enough to prove the
+        // database is disposable, so the server must also be on this machine (or the operator must say, explicitly, that a remote server is a throw-away one).
+        if (!\Database\Seeders\Concerns\RefusesUnsafeSeedingHost::isLocal((string) getenv('DB_HOST')) && getenv('SSI_MYSQL_REMOTE_IS_DISPOSABLE') !== '1') {
+            $this->markTestSkipped('Refusing: DB_HOST is not this machine. Set SSI_MYSQL_REMOTE_IS_DISPOSABLE=1 only for a throw-away test server.');
+        }
         parent::setUp();
         $this->assertSame('mysql', DB::connection()->getDriverName(), 'These tests are only meaningful on MySQL.');
     }

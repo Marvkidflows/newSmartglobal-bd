@@ -84,7 +84,7 @@ class RegisterController extends Controller
             'email'        => ['required', 'email', 'max:255'],
             'country_iso2' => ['required', 'string', 'size:2'],
             'phone'        => ['required', 'string', 'max:20'],
-            'password'     => ['required', 'min:8', 'confirmed'],
+            'password'     => array_merge(['required', 'confirmed'], \App\Support\PasswordPolicy::rules()),   // D-12
             'referral_code'=> ['nullable', 'string', 'max:20'],
             'visitor_token'=> ['nullable', 'string', 'max:64'],
         ] + $this->privacyPolicy->rules(), $this->privacyPolicy->messages());
@@ -151,7 +151,7 @@ class RegisterController extends Controller
             'full_name'    => ['required', 'string', 'max:255'],
             'country_iso2' => ['required', 'string', 'size:2'],
             'phone'        => ['required', 'string', 'max:20'],
-            'password'     => ['required', 'min:8', 'confirmed'],
+            'password'     => array_merge(['required', 'confirmed'], \App\Support\PasswordPolicy::rules()),   // D-12
             'referral_code'=> ['nullable', 'string', 'max:20'],
             'visitor_token'=> ['nullable', 'string', 'max:64'],
         ] + $this->privacyPolicy->rules(), $this->privacyPolicy->messages());
@@ -209,7 +209,7 @@ class RegisterController extends Controller
                 ])->save();
                 $this->privacyPolicy->record($locked, $validated);
 
-                return $locked->createToken('registration')->plainTextToken;
+                return \App\Support\AuthTokens::issue($locked, 'registration');   // D-02: expiring token
             });
         } catch (ValidationException $e) {
             $this->discloseOrThrottle($request);   // only reachable after a CORRECT code; nothing was committed and the code is still valid
@@ -298,7 +298,7 @@ class RegisterController extends Controller
 
         /** @var User $user */
         $user  = $outcome['result'];
-        $token = $user->createToken('registration')->plainTextToken;
+        $token = \App\Support\AuthTokens::issue($user, 'registration');   // D-02: expiring token
 
         // Everything below is OUTSIDE the transaction and best-effort: the account exists and is verified whatever happens here.
         $this->track(fn (RegistrationTracker $t) => $t->attempt($user, $validated['visitor_token'] ?? null, false));

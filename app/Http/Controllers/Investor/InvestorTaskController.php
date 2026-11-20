@@ -150,7 +150,8 @@ class InvestorTaskController extends Controller
             if ($submitted === null) {
                 return response()->json(['message' => 'Please enter the required amount for this task.'], 422);
             }
-            if (bccomp((string) $submitted, (string) $requiredAmount, 2) === -1) {
+            // Compared in whole cents (truncated to 2 decimals, as bccomp(...,2) did) so the endpoint does not depend on ext-bcmath.
+            if ((int) floor((float) $submitted * 100 + 1e-6) < (int) floor((float) $requiredAmount * 100 + 1e-6)) {
                 return response()->json([
                     'message' => 'The amount entered is below what this task requires. Minimum: $' . number_format($requiredAmount, 2) . '.',
                 ], 422);

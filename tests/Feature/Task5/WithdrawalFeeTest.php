@@ -185,9 +185,12 @@ class WithdrawalFeeTest extends Task5TestCase
 
     public function test_admin_approval_requires_a_management_reference_and_valid_numbers(): void
     {
-        $base = ['fee_type' => 'fixed', 'fixed_amount' => 2, 'is_active' => true, 'policy_approved' => true, 'reason' => 'test reason'];
-        $this->fin($this->admin)->postJson('/api/financial/withdrawal-fees/policy', $base)->assertStatus(422);
-        $this->fin($this->admin)->postJson('/api/financial/withdrawal-fees/policy', $base + ['approval_reference' => 'M-1'])->assertCreated();
+        // D-04: drafted by one Administrator; approved (with a reference) by a different one.
+        $base = ['fee_type' => 'fixed', 'fixed_amount' => 2, 'is_active' => true, 'reason' => 'test reason'];
+        $id = $this->fin($this->admin)->postJson('/api/financial/withdrawal-fees/policy', $base)->assertCreated()->json('policy.id');
+        $second = $this->secondAdmin();
+        $this->fin($second)->postJson("/api/financial/withdrawal-fees/policy/{$id}/approve", ['reason' => 'test approval'])->assertStatus(422);
+        $this->fin($second)->postJson("/api/financial/withdrawal-fees/policy/{$id}/approve", ['approval_reference' => 'M-1', 'reason' => 'test approval'])->assertCreated();
         foreach ([['fee_type' => 'fixed'], ['fee_type' => 'percentage', 'percentage' => 150], ['fee_type' => 'percentage', 'percentage' => -1], ['fee_type' => 'fixed', 'fixed_amount' => -3],
             ['fee_type' => 'combined', 'fixed_amount' => 1], ['fee_type' => 'bogus'], ['fee_type' => 'fixed', 'fixed_amount' => 1, 'currency' => 'EUR']] as $bad) {
             $this->fin($this->admin)->postJson('/api/financial/withdrawal-fees/policy', $bad + ['reason' => 'test reason'])->assertStatus(422);

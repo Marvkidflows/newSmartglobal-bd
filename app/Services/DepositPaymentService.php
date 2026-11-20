@@ -153,6 +153,39 @@ class DepositPaymentService
     }
 
     /**
+     * READ-ONLY dry run of record(): what WOULD be stored/credited for these inputs. Writes nothing, takes no lock, never changes the deposit or any
+     * rate. Uses the same conversion, tolerance and rate-warning logic as record() so the preview cannot disagree with the real check.
+     * @return array{valid:bool,errors:array,computed_usd:?float,approved_usd:?float,requested_usd:float,difference_pct:?float,tolerance_pct:float,
+     *               would_need_amount_acknowledgement:bool,rate_warnings:array,rate:?float,mode:string}
+     */
+    public function preview(Deposit $deposit, array $d): array
+    {
+        $currency = strtoupper(trim((string) ($d['paid_currency'] ?? '')));
+        $isUsd = $currency === UsdValuationService::RANKING_CURRENCY;
+        $paid = $d['paid_amount'] ?? null; $rate = $d['rate'] ?? null; $errors = [];
+        if (!is_numeric($paid) || (float) $paid <= 0 || (float) $paid > 1e12) $errors['paid_amount'] = 'Enter the amount actually paid (greater than zero).';
+        if (!$this->currencies->isSupported($currency)) $errors['paid_currency'] = 'Not a supported currency code.';
+        if (!$isUsd) {
+            if (!is_numeric($rate) || (float) $rate <= 0 || (float) $rate > 1e9) $errors['rate'] = 'A positive exchange rate to USD is required for a non-USD payment.';
+            if (empty($d['rate_date']) || !strtotime((string) $d['rate_date'])) $errors['rate_date'] = 'State the date the exchange rate applies to.';
+            elseif (Carbon::parse($d['rate_date'])->startOfDay()->gt(Carbon::today())) $errors['rate_date'] = 'The rate date cannot be in the future.';
+        }
+        $out = ['valid' => !$errors, 'errors' => $errors, 'computed_usd' => null, 'approved_usd' => null, 'requested_usd' => (float) $deposit->amount, 'difference_pct' => null,
+            'tolerance_pct' => (float) config('ranks.approved_amount_tolerance_percent', 1), 'would_need_amount_acknowledgement' => false, 'rate_warnings' => [],
+            'rate' => $isUsd ? 1.0 : (is_numeric($rate) ? (float) $rate : null), 'mode' => $this->exactValuation() ? 'exact_decimal' : 'legacy_float'];
+        if ($errors) return $out;
+        $fx = $isUsd ? 1.0 : (float) $rate;
+        $out['rate_warnings'] = $isUsd ? [] : $this->valuations->rateWarnings($currency, $fx, Carbon::parse($d['rate_date']),
+            !empty($d['payment_date']) && strtotime((string) $d['payment_date']) ? Carbon::parse($d['payment_date']) : $deposit->created_at, null, null, (int) $deposit->id);
+        $computed = $this->convertUsd($paid, $isUsd ? '1' : (string) $rate);
+        $approved = (isset($d['approved_amount']) && is_numeric($d['approved_amount']) && (float) $d['approved_amount'] > 0) ? $this->money2($d['approved_amount']) : $computed;
+        $diff = $computed > 0 ? abs($approved - $computed) / $computed * 100 : 100.0;
+        $out['computed_usd'] = $computed; $out['approved_usd'] = $approved; $out['difference_pct'] = round($diff, 2);
+        $out['would_need_amount_acknowledgement'] = $diff > $out['tolerance_pct'];
+        return $out;
+    }
+
+    /**
      * Why this deposit may NOT be approved yet (empty = safe to approve). Approval credits the wallet and opens an
      * investment, so the actual payment must be established first: a staff-verified record of the amount paid, its
      * currency and — unless it is USD — the recorded rate, source and payment date, with the approved USD figure

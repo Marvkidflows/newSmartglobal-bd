@@ -38,7 +38,7 @@ class FinancialProfileController extends Controller
     {
         $validated = $request->validate([
             'current_password' => ['required', 'string'],
-            'new_password'      => ['required', 'string', 'min:8', 'confirmed'],
+            'new_password'      => array_merge(['required', 'confirmed'], \App\Support\PasswordPolicy::rules()),   // D-12
         ]);
 
         $user = Auth::user();
@@ -50,6 +50,9 @@ class FinancialProfileController extends Controller
         $user->password = Hash::make($validated['new_password']);
         $user->save();
 
-        return response()->json(['message' => 'Password updated successfully.']);
+        // D-02: sign every OTHER session out (the current one stays), as RegistrationProfileController already does.
+        \App\Support\AuthTokens::revokeOthers($user);
+
+        return response()->json(['message' => 'Password updated successfully. Other sessions have been signed out.']);
     }
 }

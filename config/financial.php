@@ -9,6 +9,12 @@ return [
     // separate, validated allocation from wallet cash.
     'separate_deposit_approval' => (bool) env('FINANCIAL_SEPARATE_DEPOSIT_APPROVAL', false),
 
+    // Principal-lifecycle safeguard (18 Nov 2026). While the documented target model (separate_deposit_approval + ledger) is NOT approved, approving a
+    // deposit that carries a plan opens a position without debiting the wallet (legacy "dual" flow, finding F-02). This switch lets Management FREEZE that
+    // one operation so no NEW dual positions are created while decision D1 is pending:  'allow' = today's behaviour (DEFAULT, unchanged) | 'block' = refuse.
+    // It never changes balances or existing positions and does NOT activate the target model. Deposits without a plan are unaffected.
+    'legacy_deposit_with_plan' => env('FINANCIAL_LEGACY_DEPOSIT_WITH_PLAN', 'allow'),   // raw; validated by App\Support\FundingSource::legacyDepositPolicy() (invalid => 'allow' + warning, never an unapproved freeze)
+
     // §1B/§2: the wallet ledger (separate classifications), linked investment allocations and position-level principal movements.
     'ledger_enabled' => (bool) env('FINANCIAL_LEDGER_ENABLED', false),
 

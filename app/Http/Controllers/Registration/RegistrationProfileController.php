@@ -23,16 +23,14 @@ class RegistrationProfileController extends Controller
     {
         $v = $request->validate([
             'current_password' => ['required', 'string'],
-            'new_password'     => ['required', 'string', 'min:8', 'max:128', 'confirmed', 'different:current_password'],
+            'new_password'     => array_merge(['required', 'confirmed', 'different:current_password'], \App\Support\PasswordPolicy::rules()),   // D-12
         ]);
         $user = $request->user();
         if (!Hash::check($v['current_password'], $user->password)) {
             return response()->json(['message' => 'Current password is incorrect.'], 422);
         }
         $user->forceFill(['password' => Hash::make($v['new_password'])])->save();
-        $current = $user->currentAccessToken();
-        $keep    = $current instanceof \Laravel\Sanctum\PersonalAccessToken ? $current->getKey() : null;   // transient/session auth has no token row to keep
-        $user->tokens()->when($keep, fn ($q) => $q->where('id', '!=', $keep))->delete();
+        \App\Support\AuthTokens::revokeOthers($user);   // D-02: same behaviour as before, now shared
         RegistrationEvent::record('staff_password_changed', null, $user);
         return response()->json(['message' => 'Password updated successfully. Other sessions have been signed out.']);
     }

@@ -457,6 +457,8 @@ class MessageController extends Controller
  * POST /api/public/contact-support
  * Used by deactivated (logged-out) users to reach support without a session.
  */
+private const SUPPORT_ACK = 'If that address belongs to an account, your message has been sent to our support team.';
+
 public function publicContactSupport(Request $request)
 {
     $validated = $request->validate([
@@ -468,19 +470,20 @@ public function publicContactSupport(Request $request)
         ->where('role', 'investor')
         ->first();
 
+    // Uniform answer: this public endpoint must not reveal which e-mail addresses have an account (account enumeration).
+    // Nothing is stored for an unknown address.
     if (!$investor) {
         return response()->json([
-            'success' => false,
-            'message' => 'We could not find an account with that email.',
-        ], 404);
+            'success' => true,
+            'message' => self::SUPPORT_ACK,
+        ]);
     }
 
     $admin = User::where('role', 'admin')->first();
     if (!$admin) {
-        return response()->json([
-            'success' => false,
-            'message' => 'Support is currently unavailable.',
-        ], 503);
+        // Same public answer as above (no enumeration); the failure is only logged for operators.
+        \Log::warning('Public contact-support: no administrator account available to receive the request.');
+        return response()->json(['success' => true, 'message' => self::SUPPORT_ACK]);
     }
 
     Message::create([
@@ -496,7 +499,7 @@ public function publicContactSupport(Request $request)
 
     return response()->json([
         'success' => true,
-        'message' => 'Your message has been sent to our support team.',
+        'message' => self::SUPPORT_ACK,
     ]);
 }
 }

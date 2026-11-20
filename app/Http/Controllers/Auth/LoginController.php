@@ -83,7 +83,7 @@ class LoginController extends Controller
         // Suspended and frozen users CAN log in — the frontend handles the UI
         // restriction, and the middleware enforces backend protection.
 
-        $token = $user->createToken('auth-token')->plainTextToken;
+        $token = \App\Support\AuthTokens::issue($user, 'auth-token');   // D-02: tokens expire (App\Support\AuthTokens)
 
         if ($request->expectsJson()) {
             return response()->json([

@@ -11,6 +11,13 @@ return [
     // The command has never actually been scheduled, so the first run settles the whole backlog.
     'investment_maturity' => (bool) env('SCHEDULE_INVESTMENT_MATURITY', false),
 
+    // D-05: switching the flag on is NOT enough. A scheduled run pays only if BOTH of these are set (see UpdateInvestmentMaturity::scheduledRunRefusal):
+    //   INVESTMENT_MATURITY_APPROVAL_REF       the Finance sign-off reference / named approver for the reviewed --dry-run total
+    //   INVESTMENT_MATURITY_MAX_RUN_TOTAL      the largest total one run may pay (the approved backlog total, later the daily cap); a run above it pays nothing
+    // Both default to empty, so enabling the flag by mistake still pays nobody. No value is invented here.
+    'investment_maturity_approval_ref'   => env('INVESTMENT_MATURITY_APPROVAL_REF'),
+    'investment_maturity_max_run_total'  => env('INVESTMENT_MATURITY_MAX_RUN_TOTAL'),
+
     // Imports/refreshes football fixtures every 30 minutes (no money involved; takes a cache lock;
     // logs a failed run if no API key is configured). Matches the original intent in Kernel.php.
     'fixture_sync' => (bool) env('SCHEDULE_FIXTURE_SYNC', true),

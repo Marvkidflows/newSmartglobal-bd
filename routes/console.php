@@ -22,7 +22,7 @@ Artisan::command('inspire', function () {
 
 // ── Previously defined in app/Console/Kernel.php, which Laravel 12 never loads, so these did not run ──
 // Gated by config/scheduling.php (evaluated when the scheduler fires, not when it boots).
-\Illuminate\Support\Facades\Schedule::command('investments:update-maturity')
+\Illuminate\Support\Facades\Schedule::command('investments:update-maturity --scheduled')
     ->dailyAt('00:00')->timezone('UTC')->withoutOverlapping(120)->onOneServer()
     ->when(fn () => (bool) config('scheduling.investment_maturity'));
 

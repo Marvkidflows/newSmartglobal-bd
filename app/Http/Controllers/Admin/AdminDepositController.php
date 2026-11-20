@@ -124,6 +124,11 @@ class AdminDepositController extends Controller
                 return ['ok' => false, 'user' => null, 'reason' => 'status'];
             }
 
+            // Principal-lifecycle safeguard (optional freeze, default 'allow' = unchanged): stop creating NEW legacy "dual" positions while D1 is pending.
+            if (\App\Support\FundingSource::freezesLegacyDepositApproval($locked->investment_plan_id)) {
+                return ['ok' => false, 'user' => null, 'reason' => 'blocked', 'blockers' => ['Approval of deposits that carry an investment plan is frozen by Management while the principal treatment decision (D1) is pending. Nothing was changed.']];
+            }
+
             // SAFETY GATE: approval credits the wallet and opens an investment, so the actual payment (amount, currency,
             // and for non-USD the recorded rate / source / payment date) must be verified first. Never assume USD.
             // The one explicit shortcut is the approver attesting — with a reason, under their name — that it was

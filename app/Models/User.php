@@ -13,6 +13,14 @@ class User extends Authenticatable
 {
     use HasApiTokens, HasFactory, Notifiable;
 
+    /** D-08: a user with financial or audit history cannot be deleted (see App\Support\FinancialRecordRetention). */
+    protected static function booted(): void
+    {
+        static::deleting(function (User $user) {
+            \App\Support\FinancialRecordRetention::assertDeletable($user);
+        });
+    }
+
     // F-12 (audit 2 Nov 2026): 'role', 'status', 'balance' and 'withdrawal_pin' are deliberately NOT mass-assignable, so request data can never
     // change privilege, account state, wallet or PIN. Server code that legitimately sets them uses forceFill()/User::unguarded()/property assignment.
     protected $fillable = [

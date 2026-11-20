@@ -157,6 +157,24 @@ class FinancialReferralController extends Controller
                 'Limits on number / total value of rewards', 'Destination account for rewards (wallet assumed)', 'Whether and when rewards may be reversed']]);
     }
 
+    // POST /financial/referral-policy/{policy}/approve   (D-04: a DIFFERENT Administrator approves an existing draft)
+    public function approvePolicy(Request $request, int $policy)
+    {
+        Gate::authorize('financial.configure-referral-policy');
+        $v = $request->validate(['approval_reference' => ['required', 'string', 'min:3', 'max:120'], 'reason' => ['required', 'string', 'min:3', 'max:900']]);
+        $p = $this->svc->approveDraft($request->user(), $policy, $v['approval_reference'], $v['reason']);
+        return response()->json(['message' => 'Referral policy approved as a new version. Existing rewards keep the amount they were created with.', 'policy_id' => $p->id], 201);
+    }
+
+    // POST /financial/referral-policy/{policy}/reject
+    public function rejectPolicy(Request $request, int $policy)
+    {
+        Gate::authorize('financial.configure-referral-policy');
+        $v = $request->validate(['reason' => ['required', 'string', 'min:3', 'max:900']]);
+        $this->svc->rejectDraft($request->user(), $policy, $v['reason']);
+        return response()->json(['message' => 'Draft rejection recorded in the audit trail.']);
+    }
+
     // POST /financial/referral-policy
     public function savePolicy(Request $request)
     {

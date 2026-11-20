@@ -4,6 +4,14 @@
 // DEFAULTS ARE THE SAFE VALUES AND ARE A BEHAVIOUR CHANGE for the admin tools (resets, bulk balance, mass profit edits now need a second person).
 // The thresholds below are PLACEHOLDERS pending Management / Financial Team confirmation (see docs/MANAGEMENT_DECISIONS.md). Nothing is invented as approved.
 return [
+    // D-04: maker-checker for fee and referral policies. When true (default), a policy can never be marked Management-approved in the same request that
+    // authors it; an Administrator approves an existing DRAFT, and must be a different person from its author. FIN_POLICY_DUAL_CONTROL=false exists only so
+    // legacy single-step tests can be migrated; do not turn it off in production without a recorded Management decision (D2).
+    // D-09: the staff member who approved a referral reward may not also credit it (Form #8). Rewards stay inactive until a policy is approved anyway.
+    'referral_separate_credit' => (bool) env('FIN_REFERRAL_SEPARATE_CREDIT', true),
+
+    'policy_dual_control' => (bool) env('FIN_POLICY_DUAL_CONTROL', true),
+
     // Master switch for the balance-related second approvals (reset / bulk / large single adjustment). Profit adjustments have their own switch.
     'dual_approval_enabled' => (bool) env('FIN_DUAL_APPROVAL_ENABLED', true),
 

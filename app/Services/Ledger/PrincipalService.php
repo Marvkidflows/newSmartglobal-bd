@@ -74,6 +74,11 @@ class PrincipalService
         $this->assertEnabled();
         return DB::transaction(function () use ($position, $amount, $idempotencyKey, $reference, $evidence, $actor, $withdrawalId) {
             $i = $this->lockRedeemable($position);
+            // Principal-lifecycle safeguard: a position opened by a legacy deposit-with-plan never had its principal debited from the wallet
+            // (finding F-02), so crediting it back would pay the same money twice. Refused until Management/Finance decide the account (D1).
+            if ($i->source_deposit_id && !\Illuminate\Support\Facades\DB::table('investment_allocations')->where('investment_id', $i->id)->exists()) {
+                $this->fail('This position was opened by a deposit with a plan and its principal was never debited from the wallet, so returning it to the wallet would credit the same money twice. Finance and Management must decide this account first (decision D1).');
+            }
             $key = "redemption:{$idempotencyKey}:{$i->id}:return_to_wallet";
             if ($m = PrincipalMovement::where('source_key', $key)->first()) return $m;   // a retry returns the original, never a second credit
 

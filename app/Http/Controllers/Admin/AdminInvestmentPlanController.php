@@ -110,7 +110,8 @@ class AdminInvestmentPlanController extends Controller
             'profit_percentage'   => $validated['profit_percent'] ?? $investmentPlan->profit_percentage,
             'profit_percent'      => $validated['profit_percent'] ?? $investmentPlan->profit_percent,
             'duration_days'       => $validated['duration_days']  ?? $investmentPlan->duration_days,
-            'is_featured'         => $request->boolean('is_featured'),
+            // A partial update (e.g. the Active/Inactive toggle sends only `status`) must NOT silently un-feature the plan.
+            'is_featured'         => $request->has('is_featured') ? $request->boolean('is_featured') : (bool) $investmentPlan->is_featured,
             'status'              => $validated['status']         ?? $investmentPlan->status,
         ]);
 

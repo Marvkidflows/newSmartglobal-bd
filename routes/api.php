@@ -267,6 +267,9 @@ Route::get('/investor/deposits/{deposit}',          [InvestorDepositController::
         Route::get('/investor/withdrawal-pin/status', [WithdrawalPinController::class, 'status'])->name('withdrawal-pin.status');
         Route::post('/investor/withdrawal-pin',        [WithdrawalPinController::class, 'store'])->name('withdrawal-pin.store');
         Route::get('/investor/referrals', [InvestorReferralController::class, 'index'])->name('referrals.index');
+        // Wallet summary + unified transaction history (READ-ONLY, own records; the frontend never computes a balance).
+        Route::get('/investor/wallet',       [\App\Http\Controllers\Investor\InvestorWalletController::class, 'summary'])->name('wallet.summary');
+        Route::get('/investor/transactions', [\App\Http\Controllers\Investor\InvestorWalletController::class, 'transactions'])->name('wallet.transactions');
 
         /*
         |----------------------------------------------------------------------
@@ -346,6 +349,15 @@ Route::get('/investor/deposits/{deposit}',          [InvestorDepositController::
         ->prefix('admin')
         ->name('admin.')
         ->group(function () {
+
+        // Policy & Configuration Centre + staff visibility (READ-ONLY; no setting can be changed here).
+        // Public contact-support requests already stored in `messages`: list/detail/search + open/closed + read, every change audited. Admin only.
+        Route::post('/investment-plan-preview', [\App\Http\Controllers\Financial\PolicyPreviewController::class, 'plan'])->middleware('throttle:30,1')->name('investment-plan-preview');   // READ-ONLY
+        Route::get('/support-requests',          [\App\Http\Controllers\Admin\SupportRequestController::class, 'index'])->name('support-requests.index');
+        Route::get('/support-requests/{id}',     [\App\Http\Controllers\Admin\SupportRequestController::class, 'show'])->whereNumber('id')->name('support-requests.show');
+        Route::patch('/support-requests/{id}',   [\App\Http\Controllers\Admin\SupportRequestController::class, 'update'])->whereNumber('id')->middleware('throttle:60,1')->name('support-requests.update');
+        Route::get('/policy-centre', [\App\Http\Controllers\Admin\PolicyCentreController::class, 'index'])->name('policy-centre');
+        Route::get('/staff',         [\App\Http\Controllers\Admin\PolicyCentreController::class, 'staff'])->name('staff.index');
 
         Route::get('/dashboard', [AdminDashboardController::class, 'dashboard'])
             ->name('dashboard');
@@ -483,7 +495,7 @@ Route::post('/global/balance-bulk',       [AdminGlobalManagementController::clas
         Route::post('/global/profit-adjustments/{adjustment}/reverse', [AdminGlobalManagementController::class, 'reverseProfit'])->whereNumber('adjustment')->name('global.profit-reverse');
  
 
-        Route::resource('investment-plans', AdminInvestmentPlanController::class);
+        Route::apiResource('investment-plans', AdminInvestmentPlanController::class);   // API only: resource() also registered create/edit view routes that returned 500 (missing views)
 
         // Sectors & categories
         Route::get('/sectors',                      [AdminSectorController::class, 'index'])->name('sectors.index');
@@ -589,7 +601,7 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
 
 });
         
-        Route::resource('announcements', AdminAnnouncementController::class);
+        Route::apiResource('announcements', AdminAnnouncementController::class);
         Route::post('/announcements/{announcement}/publish',   [AdminAnnouncementController::class, 'publish'])->name('announcements.publish');
         Route::post('/announcements/{announcement}/unpublish', [AdminAnnouncementController::class, 'unpublish'])->name('announcements.unpublish');
 
@@ -722,6 +734,7 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         Route::post('/deposits/{deposit}/approve', [AdminDepositController::class, 'approve'])->middleware('can:financial.act-on-transactions')->name('deposits.approve');
         Route::post('/deposits/{deposit}/reject',  [AdminDepositController::class, 'reject'])->middleware('can:financial.act-on-transactions')->name('deposits.reject');
         Route::post('/deposits/{deposit}/hold',    [AdminDepositController::class, 'hold'])->middleware('can:financial.act-on-transactions')->name('deposits.hold');
+        Route::post('/deposits/{deposit}/payment-preview', [\App\Http\Controllers\Financial\PolicyPreviewController::class, 'payment'])->whereNumber('deposit')->middleware('throttle:60,1')->name('deposits.payment-preview');   // READ-ONLY FX dry run
         Route::post('/deposits/{deposit}/payment-details', [AdminDepositController::class, 'recordPayment'])->middleware('can:financial.act-on-transactions')->name('deposits.payment');
         Route::post('/deposits/{deposit}/notes',   [AdminDepositController::class, 'addNote'])->name('deposits.notes');
 
@@ -812,6 +825,9 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         Route::get('/transactions/{type}/{id}',      [FinancialTransactionController::class, 'show'])
             ->whereIn('type', ['deposit', 'withdrawal', 'investment', 'adjustment'])->whereNumber('id')->name('transactions.show');
         Route::get('/audit-logs',                    [FinancialTransactionController::class, 'auditLogs'])->name('audit-logs.index');
+        Route::get('/transactions-export',           [\App\Http\Controllers\Financial\FinancialTransactionExportController::class, 'export'])->middleware('throttle:10,1')->name('transactions.export');   // READ-ONLY, audited CSV
+        Route::get('/investment-reconciliation',    [\App\Http\Controllers\Financial\InvestmentReconciliationController::class, 'index'])->name('investment-reconciliation');   // READ-ONLY
+        Route::get('/balance-integrity',             [\App\Http\Controllers\Financial\BalanceIntegrityController::class, 'index'])->name('balance-integrity');   // READ-ONLY exception monitor
 
         // Task 5: referral bonus management + withdrawal fee configuration. Each action re-checks its Gate inside the controller (financial.* abilities);
         // approving a policy as Management-approved and reversing a credited reward are Administrator-only inside the service/gate.
@@ -831,11 +847,17 @@ Route::prefix('email-center')->name('email-center.')->group(function () {
         Route::get('/referrals-export', [\App\Http\Controllers\Financial\FinancialReferralController::class, 'export'])->middleware('throttle:10,1')->name('referrals.export');
         Route::get('/referral-policy',  [\App\Http\Controllers\Financial\FinancialReferralController::class, 'policy'])->name('referral-policy.show');
         Route::post('/referral-policy', [\App\Http\Controllers\Financial\FinancialReferralController::class, 'savePolicy'])->middleware('throttle:10,1')->name('referral-policy.save');
+        Route::post('/referral-policy/preview', [\App\Http\Controllers\Financial\PolicyPreviewController::class, 'referral'])->middleware('throttle:30,1')->name('referral-policy.preview');   // READ-ONLY impact preview
+        Route::post('/referral-policy/{policy}/approve', [\App\Http\Controllers\Financial\FinancialReferralController::class, 'approvePolicy'])->whereNumber('policy')->middleware('throttle:10,1')->name('referral-policy.approve');
+        Route::post('/referral-policy/{policy}/reject',  [\App\Http\Controllers\Financial\FinancialReferralController::class, 'rejectPolicy'])->whereNumber('policy')->middleware('throttle:10,1')->name('referral-policy.reject');
 
         Route::prefix('withdrawal-fees')->name('withdrawal-fees.')->group(function () {
             $c = \App\Http\Controllers\Financial\FinancialWithdrawalFeeController::class;
             Route::get('/policy',                                   [$c, 'policy'])->name('policy');
             Route::post('/policy',                                  [$c, 'savePolicy'])->middleware('throttle:10,1')->name('policy.save');
+            Route::post('/policy/preview',                          [\App\Http\Controllers\Financial\PolicyPreviewController::class, 'withdrawalFee'])->middleware('throttle:30,1')->name('policy.preview');   // READ-ONLY impact preview
+            Route::post('/policy/{policy}/approve',                 [$c, 'approvePolicy'])->whereNumber('policy')->middleware('throttle:10,1')->name('policy.approve');
+            Route::post('/policy/{policy}/reject',                  [$c, 'rejectPolicy'])->whereNumber('policy')->middleware('throttle:10,1')->name('policy.reject');
             Route::get('/summary',                                  [$c, 'summary'])->name('summary');
             Route::get('/reconciliation',                           [$c, 'reconciliation'])->name('reconciliation');
             Route::get('/withdrawals',                              [$c, 'withdrawals'])->name('withdrawals');

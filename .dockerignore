@@ -14,3 +14,9 @@ storage/logs/*
 npm-debug.log
 .idea
 .vscode
+
+# D-24: stale test output and leftover SQLite test database files
+ssi_remediation_test
+ssi_remediation_test-journal
+mysql-results.txt
+rank-test-results.txt

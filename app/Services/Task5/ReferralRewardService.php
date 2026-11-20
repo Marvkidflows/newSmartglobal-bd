@@ -225,6 +225,11 @@ class ReferralRewardService
             if ($locked->status === 'credited') throw ValidationException::withMessages(['status' => ['This reward has already been credited.']]);
             if ($locked->status !== 'approved') throw ValidationException::withMessages(['status' => ["Only an approved reward can be credited (current status: {$locked->status}). A pending reward is never credited."]]);
             if ($actor->id === $locked->referrer_id) throw ValidationException::withMessages(['actor' => ['You cannot credit your own reward.']]);
+            // D-09 (Form #8, pending Management confirmation D3): the person who approved a reward cannot also credit it. The approver and the crediting
+            // actor are both recorded on the reward (decided_by, credited_by) and in the audit log. FIN_REFERRAL_SEPARATE_CREDIT=false switches this off.
+            if (config('financial_controls.referral_separate_credit', true) && $locked->decided_by !== null && (int) $actor->id === (int) $locked->decided_by) {
+                throw ValidationException::withMessages(['actor' => ['You approved this reward, so a different staff member must credit it (separation of duties).']]);
+            }
             if ($locked->credit_reference) throw ValidationException::withMessages(['status' => ['A credit reference already exists for this reward.']]);
             if (($locked->currency ?? 'USD') !== 'USD') throw ValidationException::withMessages(['currency' => ['Rewards are credited to the USD wallet only; no exchange rate is ever assumed. Resolve the currency policy first.']]);
             $referrer = User::find($locked->referrer_id);
@@ -245,6 +250,8 @@ class ReferralRewardService
     public function reverse(ReferralReward $r, User $actor, string $reason): ReferralReward
     {
         $this->assertStaff($actor);
+        // D-11: reversal deducts money. Administrator only, enforced here as well as at the route gate (defence in depth); a reason is mandatory and recorded.
+        if ($actor->role !== 'admin') throw ValidationException::withMessages(['actor' => ['Only an Administrator may reverse a credited reward.']]);
         if (trim($reason) === '') throw ValidationException::withMessages(['reason' => ['A reason is required to reverse a credited reward.']]);
         return DB::transaction(function () use ($r, $actor, $reason) {
             $locked = ReferralReward::whereKey($r->id)->lockForUpdate()->first();
@@ -288,6 +295,10 @@ class ReferralRewardService
         foreach (self::CRITERIA_KEYS as $k) $crit[$k] = (bool) ($d['criteria'][$k] ?? false);
         foreach (['max_rewards_per_referrer', 'max_total_value_per_referrer'] as $k) $crit[$k] = isset($d['criteria'][$k]) && $d['criteria'][$k] !== '' ? $d['criteria'][$k] : null;
         $approve = (bool) ($d['policy_approved'] ?? false);
+        if ($approve && config('financial_controls.policy_dual_control', true)) {
+            // D-04: authoring and approving are separate acts by separate people. Nothing is saved.
+            throw ValidationException::withMessages(['policy_approved' => ['Save this as a draft. A different Administrator must then approve it (separation of duties).']]);
+        }
         if ($approve) {
             if ($actor->role !== 'admin') throw ValidationException::withMessages(['policy_approved' => ['Only an Administrator may mark the referral policy as Management-approved.']]);
             if (empty($d['approval_reference'])) throw ValidationException::withMessages(['approval_reference' => ['The Management approval reference is required to approve the policy.']]);
@@ -306,6 +317,45 @@ class ReferralRewardService
                 ['reward_amount' => (string) $p->reward_amount, 'criteria' => $crit, 'approved' => $approve, 'effective_from' => $effective->toIso8601String()], $d['reason']);
             return $p;
         });
+    }
+
+    /** D-04: second-person approval of an existing referral-policy DRAFT. Same rules as WithdrawalFeeService::approveDraft; terms are copied from the draft, never from the client. */
+    public function approveDraft(User $actor, int $draftId, string $reference, string $reason): ReferralPolicy
+    {
+        if ($actor->role !== 'admin') throw ValidationException::withMessages(['policy' => ['Only an Administrator may approve the referral policy.']]);
+        if (trim($reference) === '') throw ValidationException::withMessages(['approval_reference' => ['The Management approval reference is required.']]);
+        if (trim($reason) === '') throw ValidationException::withMessages(['reason' => ['A reason is required.']]);
+
+        return DB::transaction(function () use ($actor, $draftId, $reference, $reason) {
+            $draft = ReferralPolicy::lockForUpdate()->find($draftId);
+            if (!$draft) throw ValidationException::withMessages(['policy' => ['That policy draft does not exist.']]);
+            if ($draft->policy_approved) throw ValidationException::withMessages(['policy' => ['That version is already approved.']]);
+            if ((int) $draft->changed_by === (int) $actor->id) throw ValidationException::withMessages(['policy' => ['You authored this draft, so you cannot approve it. A different Administrator must approve it.']]);
+            $crit = (array) $draft->criteria;
+            if (!collect(self::CRITERIA_KEYS)->contains(fn ($k) => !empty($crit[$k]))) throw ValidationException::withMessages(['criteria' => ['At least one activation criterion must be enabled: registration alone can never qualify a referral.']]);
+            $marker = "[approval of draft #{$draft->id}]";
+            if (ReferralPolicy::where('policy_approved', true)->where('reason', 'like', '%' . $marker . '%')->exists()) {
+                throw ValidationException::withMessages(['policy' => ['This draft has already been approved.']]);
+            }
+            $effective = $draft->effective_from && $draft->effective_from->isFuture() ? $draft->effective_from : now();
+            $prev = ReferralPolicy::current();
+            $p = ReferralPolicy::create(['reward_amount' => $draft->reward_amount, 'previous_reward_amount' => $draft->previous_reward_amount, 'currency' => $draft->currency, 'criteria' => $crit, 'policy_approved' => true,
+                'approval_reference' => $reference, 'approved_by' => $actor->id, 'approved_at' => now(), 'effective_from' => $effective,
+                'reason' => mb_substr($reason, 0, 900) . ' ' . $marker, 'changed_by' => $draft->changed_by, 'changed_by_name' => $draft->changed_by_name, 'created_at' => now()]);
+            $this->audit->record($actor, 'referral_policy.approved', 'referral_policy', $p->id, null,
+                ['draft_id' => $draft->id, 'author_id' => $draft->changed_by, 'previous_version' => $prev?->id],
+                ['approver_id' => $actor->id, 'approval_reference' => $reference, 'reward_amount' => (string) $p->reward_amount, 'criteria' => $crit, 'effective_from' => $effective->toIso8601String()], $reason);
+            return $p;
+        });
+    }
+
+    public function rejectDraft(User $actor, int $draftId, string $reason): void
+    {
+        if ($actor->role !== 'admin') throw ValidationException::withMessages(['policy' => ['Only an Administrator may reject a referral policy draft.']]);
+        if (trim($reason) === '') throw ValidationException::withMessages(['reason' => ['A reason is required.']]);
+        $draft = ReferralPolicy::find($draftId);
+        if (!$draft || $draft->policy_approved) throw ValidationException::withMessages(['policy' => ['Only an unapproved draft can be rejected.']]);
+        $this->audit->record($actor, 'referral_policy.rejected', 'referral_policy', $draft->id, null, ['author_id' => $draft->changed_by], ['rejected_by' => $actor->id], $reason);
     }
 
     // ── reporting ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────

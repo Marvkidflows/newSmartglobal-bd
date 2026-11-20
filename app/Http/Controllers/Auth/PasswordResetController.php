@@ -33,9 +33,14 @@ class PasswordResetController extends Controller
 
         // Laravel's Password broker handles token generation + sending
         // the notification (via our custom ResetPasswordNotification below).
-        Password::sendResetLink(
-            $request->only('email')
-        );
+        // A delivery failure must not change the response either: a 500 only for existing accounts would reveal them.
+        try {
+            Password::sendResetLink(
+                $request->only('email')
+            );
+        } catch (\Throwable $e) {
+            \Log::warning('Password reset link could not be sent: ' . get_class($e));
+        }
 
         // Always return the same generic response regardless of outcome,
         // to avoid leaking whether an email exists in the system.
@@ -53,7 +58,7 @@ class PasswordResetController extends Controller
         $validator = Validator::make($request->all(), [
             'token'                 => ['required', 'string'],
             'email'                 => ['required', 'email'],
-            'password'              => ['required', 'string', 'confirmed', Rules\Password::min(8)],
+            'password'              => array_merge(['required', 'confirmed'], \App\Support\PasswordPolicy::rules()),   // D-12
         ]);
 
         if ($validator->fails()) {
@@ -73,6 +78,9 @@ class PasswordResetController extends Controller
 
                 $user->save();
 
+                // D-02: a reset ends EVERY existing session, so a stolen token cannot outlive the password it was issued under.
+                \App\Support\AuthTokens::revokeAll($user);
+
                 event(new PasswordReset($user));
             }
         );
@@ -84,16 +92,13 @@ class PasswordResetController extends Controller
                     'message' => 'Password reset successful.',
                 ], 200);
 
+            // D-12: an unknown e-mail and a bad/expired token get the SAME answer (status and text), so this endpoint cannot be used to find out
+            // which addresses have accounts.
             case Password::INVALID_USER:
-                return response()->json([
-                    'success' => false,
-                    'message' => 'We could not find a user with that email address.',
-                ], 404);
-
             case Password::INVALID_TOKEN:
                 return response()->json([
                     'success' => false,
-                    'message' => 'This password reset link is invalid.',
+                    'message' => 'This password reset link is invalid or has expired. Please request a new one.',
                 ], 400);
 
             case Password::RESET_THROTTLED:
@@ -105,7 +110,7 @@ class PasswordResetController extends Controller
             default:
                 return response()->json([
                     'success' => false,
-                    'message' => 'Unable to reset password. The link may have expired.',
+                    'message' => 'This password reset link is invalid or has expired. Please request a new one.',
                 ], 400);
         }
     }

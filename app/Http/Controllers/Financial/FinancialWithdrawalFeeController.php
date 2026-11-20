@@ -49,6 +49,24 @@ class FinancialWithdrawalFeeController extends Controller
         return response()->json(['message' => 'Fee policy version saved. Withdrawals already submitted keep the fee they were disclosed with.', 'policy' => $this->policyRow($p)], 201);
     }
 
+    // POST /financial/withdrawal-fees/policy/{policy}/approve   (D-04: a DIFFERENT Administrator approves an existing draft)
+    public function approvePolicy(Request $request, int $policy)
+    {
+        Gate::authorize('financial.configure-withdrawal-fee');
+        $v = $request->validate(['approval_reference' => ['required', 'string', 'min:3', 'max:120'], 'reason' => ['required', 'string', 'min:3', 'max:900']]);
+        $p = $this->fees->approveDraft($request->user(), $policy, $v['approval_reference'], $v['reason']);
+        return response()->json(['message' => 'Fee policy approved as a new version. Withdrawals already submitted keep the fee they were disclosed with.', 'policy' => $this->policyRow($p)], 201);
+    }
+
+    // POST /financial/withdrawal-fees/policy/{policy}/reject
+    public function rejectPolicy(Request $request, int $policy)
+    {
+        Gate::authorize('financial.configure-withdrawal-fee');
+        $v = $request->validate(['reason' => ['required', 'string', 'min:3', 'max:900']]);
+        $this->fees->rejectDraft($request->user(), $policy, $v['reason']);
+        return response()->json(['message' => 'Draft rejection recorded in the audit trail.']);
+    }
+
     // GET /financial/withdrawal-fees/summary
     public function summary()
     {

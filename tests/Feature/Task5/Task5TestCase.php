@@ -36,15 +36,25 @@ abstract class Task5TestCase extends TestCase
 
     protected function approveReferralPolicy(array $criteria = ['require_kyc_approved' => true], string $amount = '5.00'): ReferralPolicy
     {
-        return app(ReferralRewardService::class)->savePolicy($this->admin, ['reward_amount' => $amount, 'criteria' => $criteria, 'policy_approved' => true,
-            'approval_reference' => 'MGMT-TEST-001', 'reason' => 'test policy']);
+        // D-04: the real two-person flow — one Administrator drafts, a DIFFERENT Administrator approves.
+        $draft = app(ReferralRewardService::class)->savePolicy($this->admin, ['reward_amount' => $amount, 'criteria' => $criteria, 'reason' => 'test policy']);
+        return app(ReferralRewardService::class)->approveDraft($this->secondAdmin(), $draft->id, 'MGMT-TEST-001', 'test approval');
+    }
+
+    /** D-04: a second, different Administrator for approving drafts. */
+    protected function secondAdmin(): User
+    {
+        static $n = 0; $n++;
+        return User::factory()->create(['role' => 'admin', 'status' => 'active', 'email' => "second.admin.{$n}@ssi-test.test"]);
     }
 
     protected function kycApprove(User $u): void { $u->forceFill(['kyc_status' => 'approved', 'kyc_verified' => true])->save(); }
 
     protected function approveFee(string $type, array $v = []): WithdrawalFeePolicy
     {
-        return app(WithdrawalFeeService::class)->savePolicy($this->admin, $v + ['fee_type' => $type, 'is_active' => true, 'policy_approved' => true, 'approval_reference' => 'MGMT-FEE-001', 'reason' => 'test fee']);
+        // D-04: draft by one Administrator, approval by a DIFFERENT Administrator.
+        $draft = app(WithdrawalFeeService::class)->savePolicy($this->admin, $v + ['fee_type' => $type, 'is_active' => true, 'reason' => 'test fee']);
+        return app(WithdrawalFeeService::class)->approveDraft($this->secondAdmin(), $draft->id, 'MGMT-FEE-001', 'test approval');
     }
 
     protected function withPin(User $u, string $pin = '1234', string $balance = '1000.00'): User

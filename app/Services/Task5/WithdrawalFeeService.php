@@ -134,6 +134,10 @@ class WithdrawalFeeService
         if ($min !== null && $max !== null && Decimal::gt(Decimal::fromInput($min), Decimal::fromInput($max))) throw ValidationException::withMessages(['min_fee' => ['The minimum fee cannot exceed the maximum fee.']]);
 
         $approve = (bool) ($d['policy_approved'] ?? false);
+        if ($approve && config('financial_controls.policy_dual_control', true)) {
+            // D-04: authoring and approving are separate acts by separate people. Nothing is saved.
+            throw ValidationException::withMessages(['policy_approved' => ['Save this as a draft. A different Administrator must then approve it (separation of duties).']]);
+        }
         if ($approve) {
             if (!($actor->role === 'admin')) throw ValidationException::withMessages(['policy_approved' => ['Only an Administrator may mark a fee policy as Management-approved.']]);
             if (empty($d['approval_reference'])) throw ValidationException::withMessages(['approval_reference' => ['The Management approval reference is required to approve a fee policy.']]);
@@ -153,6 +157,48 @@ class WithdrawalFeeService
                 ['fee_type' => $p->fee_type, 'fixed' => $p->fixed_amount, 'percentage' => $p->percentage, 'active' => $p->is_active, 'approved' => $p->policy_approved, 'effective_from' => $effective->toIso8601String()], $d['reason']);
             return $p;
         });
+    }
+
+    /**
+     * D-04: second-person approval of an existing DRAFT. Versions are immutable, so approval appends a new version with exactly the draft's terms
+     * (nothing is accepted from the client except the reference and reason). The approver must be an Administrator and must not be the draft's author.
+     * A draft can be approved once. Author, approver, reference, reason and timestamps are recorded in the new version and in the audit log.
+     */
+    public function approveDraft(User $actor, int $draftId, string $reference, string $reason): WithdrawalFeePolicy
+    {
+        if ($actor->role !== 'admin') throw ValidationException::withMessages(['policy' => ['Only an Administrator may approve a fee policy.']]);
+        if (trim($reference) === '') throw ValidationException::withMessages(['approval_reference' => ['The Management approval reference is required.']]);
+        if (trim($reason) === '') throw ValidationException::withMessages(['reason' => ['A reason is required.']]);
+
+        return DB::transaction(function () use ($actor, $draftId, $reference, $reason) {
+            $draft = WithdrawalFeePolicy::lockForUpdate()->find($draftId);
+            if (!$draft) throw ValidationException::withMessages(['policy' => ['That policy draft does not exist.']]);
+            if ($draft->policy_approved) throw ValidationException::withMessages(['policy' => ['That version is already approved.']]);
+            if ((int) $draft->configured_by === (int) $actor->id) throw ValidationException::withMessages(['policy' => ['You authored this draft, so you cannot approve it. A different Administrator must approve it.']]);
+            $marker = "[approval of draft #{$draft->id}]";
+            if (WithdrawalFeePolicy::where('policy_approved', true)->where('reason', 'like', '%' . $marker . '%')->exists()) {
+                throw ValidationException::withMessages(['policy' => ['This draft has already been approved.']]);
+            }
+            $effective = $draft->effective_from && $draft->effective_from->isFuture() ? $draft->effective_from : now();
+            $prev = WithdrawalFeePolicy::current();
+            $p = WithdrawalFeePolicy::create(['fee_type' => $draft->fee_type, 'fixed_amount' => $draft->fixed_amount, 'percentage' => $draft->percentage, 'min_fee' => $draft->min_fee, 'max_fee' => $draft->max_fee,
+                'currency' => $draft->currency, 'is_active' => $draft->is_active, 'policy_approved' => true, 'approval_reference' => $reference, 'approved_by' => $actor->id, 'effective_from' => $effective,
+                'reason' => mb_substr($reason, 0, 900) . ' ' . $marker, 'configured_by' => $draft->configured_by, 'configured_by_name' => $draft->configured_by_name, 'created_at' => now()]);
+            $this->audit->record($actor, 'withdrawal_fee.policy_approved', 'withdrawal_fee_policy', $p->id, null,
+                ['draft_id' => $draft->id, 'author_id' => $draft->configured_by, 'previous_version' => $prev?->id],
+                ['approver_id' => $actor->id, 'approval_reference' => $reference, 'fee_type' => $p->fee_type, 'fixed' => $p->fixed_amount, 'percentage' => $p->percentage, 'active' => $p->is_active, 'effective_from' => $effective->toIso8601String()], $reason);
+            return $p;
+        });
+    }
+
+    /** D-04: records a rejection of a draft (the immutable version stays as history and can never be approved by this route afterwards without a new draft). Audit only. */
+    public function rejectDraft(User $actor, int $draftId, string $reason): void
+    {
+        if ($actor->role !== 'admin') throw ValidationException::withMessages(['policy' => ['Only an Administrator may reject a fee policy draft.']]);
+        if (trim($reason) === '') throw ValidationException::withMessages(['reason' => ['A reason is required.']]);
+        $draft = WithdrawalFeePolicy::find($draftId);
+        if (!$draft || $draft->policy_approved) throw ValidationException::withMessages(['policy' => ['Only an unapproved draft can be rejected.']]);
+        $this->audit->record($actor, 'withdrawal_fee.policy_rejected', 'withdrawal_fee_policy', $draft->id, null, ['author_id' => $draft->configured_by], ['rejected_by' => $actor->id], $reason);
     }
 
     // ── reporting / reconciliation ─────────────────────────────────────────────────────────────────────────────────────────────────

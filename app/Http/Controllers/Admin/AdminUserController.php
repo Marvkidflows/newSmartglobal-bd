@@ -159,8 +159,13 @@ class AdminUserController extends Controller
         ]);
 
         $status = \Illuminate\Support\Arr::pull($validated, 'status');   // F-12: status is not mass-assignable
+        // D-02: changing someone's sign-in e-mail, or deactivating them, ends their sessions. (If an admin edits their OWN record the current session stays.)
+        $endSessions = (isset($validated['email']) && strtolower((string) $validated['email']) !== strtolower((string) $user->email)) || $status === 'deactivated';
         $user->update($validated);
         if ($status !== null) $user->forceFill(['status' => $status])->save();
+        if ($endSessions) {
+            $request->user()?->is($user) ? \App\Support\AuthTokens::revokeOthers($user) : \App\Support\AuthTokens::revokeAll($user);
+        }
 
         if ($request->expectsJson()) {
             return response()->json([

@@ -133,7 +133,9 @@ class ReferralRewardTest extends Task5TestCase
 
     public function test_the_policy_cannot_be_approved_with_no_criteria_because_registration_alone_must_not_qualify(): void
     {
-        $this->fin($this->admin)->postJson('/api/financial/referral-policy', ['reward_amount' => 5, 'criteria' => ['require_kyc_approved' => false], 'policy_approved' => true, 'approval_reference' => 'M-1', 'reason' => 'test reason'])->assertStatus(422);
+        $id = $this->fin($this->admin)->postJson('/api/financial/referral-policy', ['reward_amount' => 5, 'criteria' => ['require_kyc_approved' => false], 'reason' => 'test reason'])->assertCreated()->json('policy_id');
+        $this->fin($this->secondAdmin())->postJson("/api/financial/referral-policy/{$id}/approve", ['approval_reference' => 'M-1', 'reason' => 'test approval'])->assertStatus(422);
+        $this->assertFalse((bool) ReferralPolicy::current()->policy_approved);
     }
 
     public function test_configured_criteria_are_enforced(): void
@@ -242,13 +244,16 @@ class ReferralRewardTest extends Task5TestCase
     {
         $this->approveReferralPolicy();
         [$r1ref, $n1, $old] = $this->pair();
-        $new = $this->svc()->savePolicy($this->admin, ['reward_amount' => '7.50', 'criteria' => ['require_kyc_approved' => true], 'policy_approved' => true, 'approval_reference' => 'M-2', 'reason' => 'Board uplift']);
+        // D-04: drafted by this admin, approved by a different one.
+        $draft = $this->svc()->savePolicy($this->admin, ['reward_amount' => '7.50', 'criteria' => ['require_kyc_approved' => true], 'reason' => 'Board uplift']);
+        $new = $this->svc()->approveDraft($this->secondAdmin(), $draft->id, 'M-2', 'Board uplift');
         [$r2ref, $n2, $fresh] = $this->pair();
         $this->assertSame('5.00', (string) $old->fresh()->amount);
         $this->assertSame('7.50', (string) $fresh->fresh()->amount);
         $this->assertSame('5.00', (string) $new->previous_reward_amount);
-        $this->assertSame([$this->admin->id, 'Board uplift'], [$new->changed_by, $new->reason]);
-        $this->assertDatabaseHas('financial_audit_logs', ['action' => 'referral_policy.saved', 'entity_id' => $new->id]);
+        $this->assertSame($this->admin->id, $new->changed_by, 'the author of the draft is recorded');
+        $this->assertStringContainsString('Board uplift', $new->reason);
+        $this->assertDatabaseHas('financial_audit_logs', ['action' => 'referral_policy.approved', 'entity_id' => $new->id]);
         $this->expectException(\LogicException::class);
         $new->update(['reward_amount' => 1]);
     }

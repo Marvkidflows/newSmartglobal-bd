@@ -49,7 +49,8 @@ class InvestmentPlanSeeder extends Seeder
         ];
 
         foreach ($plans as $plan) {
-            InvestmentPlan::create($plan);
+            // D-01: idempotent. Re-running never duplicates a plan and never alters one that already exists (an admin may have edited it).
+            InvestmentPlan::firstOrCreate(['name' => $plan['name']], $plan);
         }
     }
 }

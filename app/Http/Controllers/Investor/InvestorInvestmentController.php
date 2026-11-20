@@ -213,6 +213,17 @@ class InvestorInvestmentController extends Controller
                 throw ValidationException::withMessages(['amount' => ['Insufficient balance. Please make a deposit first.']]);
             }
 
+            // Traceability while the ledger is OFF: append-only audit row in the same transaction (rolls back with the debit if it fails).
+            // Not a BalanceAdjustment, so the wallet history (which lists the investment itself) is not double counted.
+            $balanceBefore = Decimal::money($u->balance);
+            \App\Models\FinancialAuditLog::create([
+                'reference' => 'FAL-' . strtoupper(\Illuminate\Support\Str::random(10)), 'actor_id' => $u->id, 'actor_name' => $u->name ?? $u->full_name ?? 'Investor',
+                'actor_role' => $u->role ?? 'investor', 'department' => 'investor', 'action' => 'investment.funded_from_wallet',
+                'entity_type' => 'investment_account', 'entity_id' => $investment->id, 'investor_id' => $u->id,
+                'previous_value' => ['balance' => $balanceBefore], 'new_value' => ['balance' => Decimal::sub($balanceBefore, $amount), 'amount' => $amount, 'plan_id' => $plan->id],
+                'reason' => 'Investor invested from available wallet balance.',
+            ]);
+
             return [$investment, $profitPercent, (float) $expectedProfit];
         });
     }

@@ -130,14 +130,27 @@ class AdminWithdrawalController extends Controller
         $outcome = DB::transaction(function () use ($request, $withdrawal) {
             $locked = Withdrawal::where('id', $withdrawal->id)->lockForUpdate()->first();
 
-            if (!in_array($locked->status, ['pending', 'hold'], true)) {
+            // D-06: a vanished withdrawal row, or a non-pending one, is refused before anything is written.
+            if (!$locked || !in_array($locked->status, ['pending', 'hold'], true)) {
                 return ['ok' => false, 'reason' => 'not_pending', 'user' => null];
             }
 
+            // D-06: FAIL CLOSED when the investor row is missing. It used to approve the withdrawal and skip the debit entirely
+            // (an approved payout that never reduced any balance). The row lock plus the conditional UPDATE below mean two approvals can
+            // never jointly overdraw, even if another writer ignores the lock (mirrors BalanceAdjustmentService).
             $user = User::where('id', $locked->user_id)->lockForUpdate()->first();
-            if ($user && $user->balance < $locked->amount) {
+            if (!$user) {
+                return ['ok' => false, 'reason' => 'missing_user', 'user' => null];
+            }
+            $balanceBefore = (float) ($user->balance ?? 0);
+            if ($balanceBefore < (float) $locked->amount) {
                 return ['ok' => false, 'reason' => 'insufficient', 'user' => null];
             }
+            $debited = User::where('id', $user->id)->where('balance', '>=', $locked->amount)->decrement('balance', $locked->amount);
+            if ($debited !== 1) {
+                return ['ok' => false, 'reason' => 'insufficient', 'user' => null];   // nothing has been written yet
+            }
+            $user->refresh();
 
             $prevStatus = $locked->status;
             $locked->update([
@@ -153,9 +166,7 @@ class AdminWithdrawalController extends Controller
                 $request->input('reason')
             );
 
-            if ($user) {
-                $balanceBefore = (float) ($user->balance ?? 0);
-                $user->decrement('balance', $locked->amount);
+            {   // the debit itself already happened above, conditionally
                 $balanceAfter = (float) $user->balance;
 
                 BalanceAdjustment::create([
@@ -186,7 +197,11 @@ class AdminWithdrawalController extends Controller
         });
 
         if (!$outcome['ok']) {
-            $message = $outcome['reason'] === 'insufficient' ? 'Insufficient user balance.' : 'Withdrawal is not pending or on hold.';
+            $message = match ($outcome['reason']) {
+                'insufficient' => 'Insufficient user balance.',
+                'missing_user' => 'The investor account for this withdrawal no longer exists. Nothing was approved or debited.',
+                default        => 'Withdrawal is not pending or on hold.',
+            };
             if ($request->expectsJson()) {
                 return response()->json(['message' => $message], 422);
             }

@@ -60,7 +60,9 @@ class AdminInvestmentController extends Controller
         if (!$result['completed']) {
             $message = $result['reason'] === 'not_found'
                 ? 'Investment not found.'
-                : 'Only active investments can be completed. This investment is already ' . str_replace('status_', '', $result['reason']) . '; nothing was credited.';
+                : ($result['reason'] === 'missing_user'
+                    ? 'The investor account for this investment is missing, so profit cannot be credited. Nothing was changed; the investment stays active for investigation.'
+                    : 'Only active investments can be completed. This investment is already ' . str_replace('status_', '', $result['reason']) . '; nothing was credited.');
 
             if ($request->expectsJson()) {
                 return response()->json(['message' => $message], 422);

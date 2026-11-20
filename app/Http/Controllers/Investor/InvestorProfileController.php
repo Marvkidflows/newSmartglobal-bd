@@ -94,7 +94,7 @@ class InvestorProfileController extends Controller
             'postal_code'    => ['nullable', 'string', 'max:20'],
             'date_of_birth'  => ['nullable', 'date'],
             'current_password'   => ['sometimes', 'string'],
-            'new_password'       => ['sometimes', 'min:8', 'confirmed'],
+            'new_password'       => array_merge(['sometimes', 'confirmed'], \App\Support\PasswordPolicy::rules()),   // D-12
         ]);
 
         // Handle password change
@@ -153,7 +153,15 @@ class InvestorProfileController extends Controller
             unset($validated['address_line_1']);
         }
 
+        // D-02: a password change or an e-mail change signs every OTHER session out (the current one stays).
+        $securityChange = isset($validated['password'])
+            || (isset($validated['email']) && strtolower((string) $validated['email']) !== strtolower((string) $user->email));
+
         $user->update($validated);
+
+        if ($securityChange) {
+            \App\Support\AuthTokens::revokeOthers($user);
+        }
 
         if ($request->expectsJson()) {
             return response()->json([

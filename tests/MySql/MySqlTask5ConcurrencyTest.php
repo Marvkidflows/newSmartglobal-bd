@@ -21,7 +21,7 @@ class MySqlTask5ConcurrencyTest extends MySqlTestCase
         $new = User::factory()->create(['role' => 'investor', 'status' => 'active', 'registration_completed' => true, 'referred_by' => $ref->id, 'phone' => '+15550001111']);
         $new->forceFill(['kyc_status' => 'approved', 'kyc_verified' => true])->save();
         $svc = app(ReferralRewardService::class);
-        $svc->savePolicy($admin, ['reward_amount' => '5.00', 'criteria' => ['require_kyc_approved' => true], 'policy_approved' => true, 'approval_reference' => 'M-1', 'reason' => 't']);
+        $svc->approveDraft(User::factory()->create(['role' => 'admin', 'status' => 'active']), $svc->savePolicy($admin, ['reward_amount' => '5.00', 'criteria' => ['require_kyc_approved' => true], 'reason' => 't'])->id, 'M-1', 't');
         $r = $svc->createForReferred($new);
         $svc->approve($svc->evaluate($r), $fin);
         return [$ref, $r->fresh(), $fin];
@@ -47,7 +47,7 @@ class MySqlTask5ConcurrencyTest extends MySqlTestCase
         $new = User::factory()->create(['role' => 'investor', 'status' => 'active', 'registration_completed' => true, 'referred_by' => $ref->id, 'phone' => '+15550002222']);
         $new->forceFill(['kyc_status' => 'approved', 'kyc_verified' => true])->save();
         $svc = app(ReferralRewardService::class);
-        $svc->savePolicy($admin, ['reward_amount' => '5.00', 'criteria' => ['require_kyc_approved' => true], 'policy_approved' => true, 'approval_reference' => 'M-1', 'reason' => 't']);
+        $svc->approveDraft(User::factory()->create(['role' => 'admin', 'status' => 'active']), $svc->savePolicy($admin, ['reward_amount' => '5.00', 'criteria' => ['require_kyc_approved' => true], 'reason' => 't'])->id, 'M-1', 't');
         $r = $svc->createForReferred($new);
         $t = $fin->createToken('t')->plainTextToken;
         $statuses = $this->fireTogether([
@@ -74,7 +74,7 @@ class MySqlTask5ConcurrencyTest extends MySqlTestCase
     {
         $admin = User::factory()->create(['role' => 'admin', 'status' => 'active']);
         $fin = User::factory()->create(['role' => 'financial', 'status' => 'active']);
-        app(\App\Services\Task5\WithdrawalFeeService::class)->savePolicy($admin, ['fee_type' => 'fixed', 'fixed_amount' => '5.00', 'is_active' => true, 'policy_approved' => true, 'approval_reference' => 'M', 'reason' => 't']);
+        (function () use ($admin) { $s = app(\App\Services\Task5\WithdrawalFeeService::class); $s->approveDraft(User::factory()->create(['role' => 'admin', 'status' => 'active']), $s->savePolicy($admin, ['fee_type' => 'fixed', 'fixed_amount' => '5.00', 'is_active' => true, 'reason' => 't'])->id, 'M', 't'); })();
         $u = User::factory()->create(['role' => 'investor', 'status' => 'active', 'balance' => '1000.00', 'withdrawal_pin' => Hash::make('1234')]);
         $this->actingAs($u, 'sanctum')->postJson('/api/investor-investment/investor/withdrawals', ['amount' => 100, 'method' => 'usdt', 'wallet_address' => '0xabc', 'withdrawal_pin' => '1234', 'confirmed_fee' => '5.00', 'confirmed_net' => '95.00'])->assertCreated();
         $w = Withdrawal::firstOrFail(); $t = $fin->createToken('t')->plainTextToken;
@@ -87,7 +87,7 @@ class MySqlTask5ConcurrencyTest extends MySqlTestCase
     public function test_decimal_columns_round_trip_exactly_on_mysql(): void
     {
         $admin = User::factory()->create(['role' => 'admin', 'status' => 'active']);
-        $p = app(\App\Services\Task5\WithdrawalFeeService::class)->savePolicy($admin, ['fee_type' => 'combined', 'fixed_amount' => '0.10', 'percentage' => '1.2345', 'is_active' => true, 'policy_approved' => true, 'approval_reference' => 'M', 'reason' => 't']);
+        $s = app(\App\Services\Task5\WithdrawalFeeService::class); $p = $s->approveDraft(User::factory()->create(['role' => 'admin', 'status' => 'active']), $s->savePolicy($admin, ['fee_type' => 'combined', 'fixed_amount' => '0.10', 'percentage' => '1.2345', 'is_active' => true, 'reason' => 't'])->id, 'M', 't');
         $q = (new \App\Services\Task5\WithdrawalFeeCalculator())->calculate('333.33', $p->fresh());
         $this->assertSame(['333.33', '4.21', '329.12'], [$q['gross'], $q['fee'], $q['net']]);   // 0.10 + 333.33 x 1.2345% (=4.11494...) = 4.21494 -> 4.21
     }

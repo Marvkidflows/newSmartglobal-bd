@@ -5,6 +5,7 @@ use App\Models\InvestmentAccount;
 use App\Services\InvestmentSettlementService;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Log;
 
 //   php artisan investments:update-maturity --dry-run   REPORT ONLY: what would be completed and paid. Changes nothing.
 //   php artisan investments:update-maturity             refresh countdowns; complete + pay matured investments
@@ -14,12 +15,21 @@ use Illuminate\Console\Command;
 // wasn't running, all at once. ALWAYS run --dry-run first and have the Financial team approve the total.
 class UpdateInvestmentMaturity extends Command
 {
-    protected $signature = 'investments:update-maturity {--dry-run : Report only; change nothing and pay nothing}';
+    protected $signature = 'investments:update-maturity {--dry-run : Report only; change nothing and pay nothing} {--scheduled : Set by the scheduler. Refuses to pay unless Finance has recorded an approval reference and a per-run payout ceiling (D-05)}';
     protected $description = 'Update investment remaining days and complete + pay matured investments (use --dry-run first)';
 
     public function handle(InvestmentSettlementService $settlement): int
     {
         $dry = (bool) $this->option('dry-run');
+
+        // D-05: the unattended (scheduled) run is fail-closed. It pays only when Finance has recorded BOTH an approval reference and the largest total a single
+        // run may pay (the figure approved after reviewing --dry-run). Anything else, including the very first run that would settle the whole backlog, is
+        // refused BEFORE a single investment is touched and logged for the operator. A human running the command by hand is unaffected.
+        if ($this->option('scheduled') && !$dry && ($refusal = $this->scheduledRunRefusal()) !== null) {
+            Log::warning('investments:update-maturity REFUSED (scheduled): ' . $refusal);
+            $this->error('Refused: ' . $refusal . ' Nothing was changed and nobody was paid.');
+            return self::FAILURE;
+        }
 
         $refreshed = 0; $completed = 0; $skipped = 0; $noEndDate = 0; $paid = 0.0;
         $investors = []; $oldest = null; $wouldPay = 0.0;
@@ -69,10 +79,29 @@ class UpdateInvestmentMaturity extends Command
             return self::SUCCESS;
         }
 
+        if ($this->option('scheduled')) {
+            Log::info('investments:update-maturity scheduled run', ['approval_ref' => config('scheduling.investment_maturity_approval_ref'), 'refreshed' => $refreshed, 'completed' => $completed, 'credited' => round($paid, 2), 'skipped' => $skipped]);
+        }
         $this->info("Investment maturity updated: {$refreshed} refreshed, {$completed} completed and paid out (" . number_format($paid, 2) . " credited)."
             . ($skipped ? " {$skipped} skipped (already settled elsewhere)." : '')
             . ($noEndDate ? " {$noEndDate} active investment(s) have no end date and were not paid." : ''));
 
         return self::SUCCESS;
+    }
+
+    /** Null when the scheduled run may proceed, otherwise the reason it must not. */
+    private function scheduledRunRefusal(): ?string
+    {
+        $ref = trim((string) config('scheduling.investment_maturity_approval_ref'));
+        $max = config('scheduling.investment_maturity_max_run_total');
+        if ($ref === '' || $max === null || $max === '' || !is_numeric($max) || (float) $max <= 0) {
+            return 'no Finance approval is recorded (set INVESTMENT_MATURITY_APPROVAL_REF and INVESTMENT_MATURITY_MAX_RUN_TOTAL after reviewing the --dry-run output).';
+        }
+        $wouldPay = (float) InvestmentAccount::query()->where('status', 'active')->whereNotNull('end_date')
+            ->whereDate('end_date', '<=', Carbon::today()->toDateString())->sum('expected_profit');
+        if ($wouldPay > (float) $max) {
+            return 'this run would pay ' . number_format($wouldPay, 2) . ', which is above the approved per-run ceiling of ' . number_format((float) $max, 2) . '. Review --dry-run and have Finance approve a new ceiling.';
+        }
+        return null;
     }
 }

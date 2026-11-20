@@ -97,8 +97,8 @@ class RankProposedCriteriaTest extends RankTestCase
     {
         $this->app['env'] = 'production';
 
-        $this->artisan('ranks:load-proposed --activate')->assertFailed();
-        $this->artisan('ranks:load-proposed')->assertFailed();
+        $this->artisan('ranks:load-proposed --activate')->expectsOutputToContain('Refused: this command only runs in')->assertFailed();   // D-16: the SPECIFIC reason
+        $this->artisan('ranks:load-proposed')->expectsOutputToContain('current: production')->assertFailed();
 
         $this->assertSame(0, RankCriterion::withTrashed()->count());
     }
@@ -107,7 +107,7 @@ class RankProposedCriteriaTest extends RankTestCase
     {
         foreach (['staging', 'production'] as $env) {
             $this->app['env'] = $env;
-            $this->artisan('ranks:load-proposed --activate')->assertFailed();
+            $this->artisan('ranks:load-proposed --activate')->expectsOutputToContain("current: {$env}")->assertFailed();
         }
         $this->assertSame(0, RankCriterion::count());
     }
@@ -125,7 +125,7 @@ class RankProposedCriteriaTest extends RankTestCase
             $this->app['env'] = 'local';                                           // environment name passes…
             config(['database.default' => 'remote_fake',
                     'database.connections.remote_fake' => ['driver' => 'mysql', 'host' => 'db.example-remote.net']]);
-            $this->artisan('ranks:load-proposed --activate')->assertFailed();      // …database does not
+            $this->artisan('ranks:load-proposed --activate')->expectsOutputToContain('not a local development database')->assertFailed();      // …database does not
         } finally {
             config(['database.default' => $original]);                              // restore before teardown touches the DB
         }
@@ -135,7 +135,7 @@ class RankProposedCriteriaTest extends RankTestCase
     public function test_loader_needs_an_admin_to_record_as_author(): void
     {
         User::where('role', 'admin')->delete();
-        $this->artisan('ranks:load-proposed')->assertFailed();
+        $this->artisan('ranks:load-proposed')->expectsOutputToContain('No Admin user found')->assertFailed();
         $this->assertSame(0, RankCriterion::count());
     }
 
@@ -597,5 +597,18 @@ class RankProposedCriteriaTest extends RankTestCase
             $this->postJson("/api/admin/ranks/criteria/{$id}/deactivate")->assertStatus(403);
         }
         $this->assertSame($before, RankCriterion::find($id)->version);
+    }
+
+    // ── D-16 diagnostics ──────────────────────────────────────────────────────────────────────────────────────────
+    public function test_the_suite_runs_in_the_testing_environment_whatever_the_shell_exports(): void
+    {
+        $this->assertTrue(app()->environment('testing'), 'APP_ENV leaked into the suite as "' . app()->environment() . '" (phpunit.xml forces testing). The rank loader refuses outside local/testing/development, which fails every test that expects it to run.');
+        $this->assertSame('sqlite', config('database.connections.' . config('database.default') . '.driver'));
+    }
+
+    public function test_the_loader_runs_here_and_prints_its_own_reason_if_it_does_not(): void
+    {
+        $code = \Illuminate\Support\Facades\Artisan::call('ranks:load-proposed');
+        $this->assertSame(0, $code, "ranks:load-proposed refused or failed. Its printed message was:\n" . \Illuminate\Support\Facades\Artisan::output());
     }
 }
