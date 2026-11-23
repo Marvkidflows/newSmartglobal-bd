@@ -82,7 +82,8 @@ class TeamAttachmentService
 
         $ok = false;
         try {
-            $ok = (bool) $disk->put($path, $stream);
+            // DiskWriter works on every disk; a raw stream is rejected by the Cloudinary disk (no filename).
+            $ok = \App\Support\DiskWriter::put((string) config('team_documents.disk'), $path, $stream);
         } catch (\Throwable $e) {
             Log::warning('Team document storage failed: ' . $e->getMessage());
         } finally {

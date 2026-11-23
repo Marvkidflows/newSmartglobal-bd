@@ -184,7 +184,7 @@ class InvestorDepositController extends Controller
 
         $proofImagePath = $deposit->proof_image;
         if ($request->hasFile('screenshot')) {
-            $proofImagePath = $request->file('screenshot')->store('deposit-screenshots', 'public');
+            $proofImagePath = \App\Support\ProofStore::save($request->file('screenshot'));
         }
 
         $deposit->update([
