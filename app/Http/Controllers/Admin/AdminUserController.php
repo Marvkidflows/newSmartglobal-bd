@@ -237,13 +237,15 @@ class AdminUserController extends Controller
     // POST /admin/users/{user}/activate
     public function activate(Request $request, User $user)
     {
+        // A freeze is lifted only through Unfreeze (audited, approval-aware). Activate must not silently bypass it.
+        if (\App\Support\StaffAccountGuard::normalisedStatus($user) === 'frozen') {
+            return response()->json(['message' => 'This account is frozen. Use Unfreeze (a reason is recorded in the audit log); Activate is for suspended or deactivated accounts.'], 422);
+        }
         $user->forceFill(['status' => 'active'])->save();
 
         // Notify investor
-        $user->notify(new \App\Notifications\AccountStatusNotification(
-            'activated',
-            'Your account has been reactivated. You can now access all features of the platform.'
-        ));
+        // Best-effort: the status change is already saved; a mail/provider failure must not turn it into a 500.
+        $this->notifyAccountStatus($request, $user, 'activated', 'Your account has been reactivated. You can now access all features of the platform.');
 
         if ($request->expectsJson()) {
             return response()->json(['message' => 'Investor activated.', 'status' => 'active']);
@@ -257,10 +259,8 @@ class AdminUserController extends Controller
         if ($refuse = $this->refuseSelfLockout($request, $user, 'freeze')) return $refuse;
         $user->forceFill(['status' => 'frozen'])->save();
 
-        $user->notify(new \App\Notifications\AccountStatusNotification(
-            'frozen',
-            'Your account has been frozen by the administration. All financial operations have been disabled until further notice.'
-        ));
+        // Best-effort: the status change is already saved; a mail/provider failure must not turn it into a 500.
+        $this->notifyAccountStatus($request, $user, 'frozen', 'Your account has been frozen by the administration. All financial operations have been disabled until further notice.');
 
         if ($request->expectsJson()) {
             return response()->json(['message' => 'Account frozen.', 'status' => 'frozen']);
@@ -277,10 +277,8 @@ class AdminUserController extends Controller
         }
         $user->forceFill(['status' => 'active'])->save();
 
-        $user->notify(new \App\Notifications\AccountStatusNotification(
-            'unfrozen',
-            'Your account freeze has been lifted. Financial operations are now available.'
-        ));
+        // Best-effort: the status change is already saved; a mail/provider failure must not turn it into a 500.
+        $this->notifyAccountStatus($request, $user, 'unfrozen', 'Your account freeze has been lifted. Financial operations are now available.');
 
         if ($request->expectsJson()) {
             return response()->json(['message' => 'Account unfrozen.', 'status' => 'active']);

@@ -18,6 +18,13 @@ class SupportRequestController extends Controller
 {
     public const SUBJECT = 'Account Deactivated — Support Request';
 
+    /** Production runs migrations only through the separate `migrate` deployment job. Until it has run, say so plainly instead of a bare 500. */
+    private function schemaMissing()
+    {
+        if (\Illuminate\Support\Facades\Schema::hasTable('support_request_states')) return null;
+        return response()->json(['message' => 'Support Requests needs the latest database migration (table support_request_states is missing). Run the migrate deployment job, then reload this page.', 'code' => 'migration_pending'], 503);
+    }
+
     private function base()
     {
         return Message::query()->where('initiated_by', 'investor')->where('subject', self::SUBJECT);
@@ -38,6 +45,7 @@ class SupportRequestController extends Controller
     // GET /admin/support-requests?status=&read=&q=&page=&per_page=
     public function index(Request $request)
     {
+        if ($r = $this->schemaMissing()) return $r;
         $v = $request->validate(['status' => ['nullable', 'in:open,closed'], 'read' => ['nullable', 'in:read,unread'], 'q' => ['nullable', 'string', 'max:100'],
             'page' => ['nullable', 'integer', 'min:1'], 'per_page' => ['nullable', 'integer', 'min:5', 'max:100']]);
         $q = $this->base()->with('investor:id,name,email')
@@ -67,6 +75,7 @@ class SupportRequestController extends Controller
     // GET /admin/support-requests/{id}  — read-only (does not mark as read)
     public function show(int $id)
     {
+        if ($r = $this->schemaMissing()) return $r;
         $m = $this->base()->with('investor:id,name,email,status')->findOrFail($id);
         return response()->json(['request' => [
             'id' => $m->id, 'investor_id' => $m->investor_id, 'investor' => $m->investor?->name, 'email' => $m->investor?->email, 'account_status' => $m->investor?->status,
@@ -77,6 +86,7 @@ class SupportRequestController extends Controller
     // PATCH /admin/support-requests/{id}   body: {status?: open|closed, read?: bool, note?: string}
     public function update(Request $request, int $id, FinancialAuditService $audit)
     {
+        if ($r = $this->schemaMissing()) return $r;
         $v = $request->validate(['status' => ['nullable', 'in:open,closed'], 'read' => ['nullable', 'boolean'], 'note' => ['nullable', 'string', 'max:500']]);
         if (!array_key_exists('status', $v) && !array_key_exists('read', $v)) return response()->json(['message' => 'Nothing to change.'], 422);
         $actor = $request->user();
