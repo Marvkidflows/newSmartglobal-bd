@@ -21,10 +21,12 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Concerns\HandlesMarvflowThreads;
+use App\Jobs\SendMarvflowStaffContactTelegram;
 use App\Models\MarvflowMessage;
 use App\Models\User;
 use App\Services\RichTextSanitizer;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class MarvflowInboxController extends Controller
 {
@@ -137,6 +139,14 @@ class MarvflowInboxController extends Controller
             $row->id, $link, $root->id
         );
         $row->forceFill(['notified_count' => $count])->save();
+
+        // Telegram to the MarvFlow team's chat (queued, after the reply is saved; subject only for a formal email, never the content).
+        // Not sent for a held (restricted-owner) reply: nobody is alerted until it is released.
+        try {
+            SendMarvflowStaffContactTelegram::dispatch($direct ? "{$label} inbox: quick message" : "{$label} inbox: email", (string) $user->name, (string) $user->role, $direct ? null : (string) $root->subject);
+        } catch (\Throwable $e) {
+            Log::warning('MarvFlow Telegram staff-contact alert could not be queued.', ['conversation_id' => $root->id]);
+        }
 
         return $this->conversation($root, 201, false, $user);
     }

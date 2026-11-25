@@ -17,6 +17,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Jobs\SendMarvflowStaffContactTelegram;
 use App\Jobs\SendMarvflowTelegramNotification;
 use App\Models\TeamRequest;
 use App\Models\TeamRequestActivity;
@@ -28,6 +29,7 @@ use Cloudinary\Cloudinary;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class DevRequestController extends Controller
 {
@@ -188,6 +190,13 @@ class DevRequestController extends Controller
             'reply',
             ['team_request_id' => $teamRequest->id]
         );
+
+        // Telegram to the MarvFlow team (queued, after the reply is saved; never carries the message text). A failure here can never undo the reply.
+        try {
+            SendMarvflowStaffContactTelegram::dispatch('Request #' . $teamRequest->id, (string) Auth::user()->name, (string) Auth::user()->role, $teamRequest->subject);
+        } catch (\Throwable $e) {
+            Log::warning('MarvFlow Telegram staff-contact alert could not be queued.', ['team_request_id' => $teamRequest->id]);
+        }
 
         return response()->json([
             'message' => 'Reply sent.',

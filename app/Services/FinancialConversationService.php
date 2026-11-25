@@ -27,7 +27,7 @@ class FinancialConversationService
 {
     public const LINK = '/financial/messages';
 
-    public function __construct(protected DepositAgentResolver $agents) {}
+    public function __construct(protected DepositAgentResolver $agents, protected TelegramService $telegram) {}
 
     /** The investor's assigned agent, only while that assignment is still valid. */
     public function assignedAgent(User $investor): ?User
@@ -56,7 +56,7 @@ class FinancialConversationService
      * @param  array{body:string, body_html:?string} $content  already validated/sanitised by RichMessageBody
      * @return array{message: Message, duplicate: bool}|null    null => nobody on the Financial Team can receive it
      */
-    public function submit(User $investor, array $content, ?string $subject, string $topic = Message::TOPIC_GENERAL, ?Deposit $deposit = null, ?string $clientToken = null, bool $fallbackToAdmins = false): ?array
+    public function submit(User $investor, array $content, ?string $subject, string $topic = Message::TOPIC_GENERAL, ?Deposit $deposit = null, ?string $clientToken = null, bool $fallbackToAdmins = false, bool $telegram = true): ?array
     {
         if ($deposit && (int) $deposit->user_id !== (int) $investor->id) {
             throw new InvalidArgumentException('A deposit enquiry can only reference the investor\'s own deposit.');
@@ -97,6 +97,7 @@ class FinancialConversationService
         }
 
         $this->alert($recipients, $investor, $message, $subject, $deposit);
+        if ($telegram) $this->alertTelegram($investor, $message, $deposit);
 
         return ['message' => $message, 'duplicate' => false];
     }
@@ -124,6 +125,27 @@ class FinancialConversationService
                     'link'              => self::LINK . '?investor=' . $investor->id,
                 ])
             ));
+        } catch (\Throwable $e) {
+            report($e);
+        }
+    }
+
+    /**
+     * Optional Telegram heads-up (the in-app alert above is the main one). The assigned agent is messaged directly when their
+     * Telegram chat id is stored; if there is no such agent, or Telegram does not confirm that DM, the staff chat(s) are
+     * used instead so the request is not missed. Never throws and never affects the saved message.
+     * $telegram = false is used by the deposit flow, which already sends its own Telegram alerts.
+     */
+    protected function alertTelegram(User $investor, Message $message, ?Deposit $deposit): void
+    {
+        try {
+            $agent  = $this->assignedAgent($investor);
+            $chatId = $agent?->telegram_chat_id ?: null;
+            $args   = [$investor->name ?? 'An investor', $investor->account_id ?? null, $message->topic === Message::TOPIC_DEPOSIT,
+                       $deposit?->transaction_reference, (string) $message->body];
+
+            $sent = $chatId ? $this->telegram->newInvestorMessage(...$args, agentChatId: $chatId) : false;
+            if (!$sent) $this->telegram->newInvestorMessage(...$args);
         } catch (\Throwable $e) {
             report($e);
         }

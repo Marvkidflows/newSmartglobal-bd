@@ -475,4 +475,124 @@ class DashboardMessagingTest extends RankTestCase
         $this->as($admin)->postJson("/api/financial/messages/{$inv->id}/send", ['body' => 'Hello'])->assertCreated()
             ->assertJsonPath('data.sender', 'Smart System Investment — Financial Team');
     }
+
+    // ── Telegram heads-up for staff (optional extra; the dashboard alert is the main one) ───────────────
+
+    /**
+     * Install THIS test's fake Telegram reply. This class's setUp() already runs a catch-all Http::fake() (empty 200 body) and Laravel
+     * uses the FIRST matching stub, so a plain Http::fake() here would be silently ignored and Telegram's reply would read as empty
+     * (an agent DM could then never be "confirmed"). Starting from a fresh HTTP client makes the reply below the one that is really used.
+     */
+    protected function fakeTelegram($response): void
+    {
+        Http::swap(new \Illuminate\Http\Client\Factory());
+        Http::fake(['api.telegram.org/*' => $response]);
+    }
+
+    protected function telegramOn(bool $ok = true): void
+    {
+        config(['services.telegram.bot_token' => 'TESTTOKEN', 'services.telegram.chat_id' => '-100STAFF', 'services.telegram.financial_chat_id' => null]);
+        $this->fakeTelegram(Http::response(['ok' => $ok]));
+    }
+
+    /** chat_id + text of every Telegram sendMessage request made so far */
+    protected function telegramSent(): array
+    {
+        return collect(Http::recorded())->map(fn ($p) => ['chat' => (string) $p[0]['chat_id'] ?? '', 'text' => (string) ($p[0]['text'] ?? '')])->values()->all();
+    }
+
+    public function test_an_investor_message_pings_the_staff_chat_on_telegram_with_the_request(): void
+    {
+        $this->staff();
+        $this->telegramOn();
+        $inv = $this->investor(['name' => 'Ivy Investor']);
+
+        $this->chat($inv, ['body' => 'How do I fund my account?'])->assertCreated();
+
+        $sent = $this->telegramSent();
+        $this->assertCount(1, $sent);
+        $this->assertSame('-100STAFF', $sent[0]['chat']);
+        $this->assertStringContainsString('New investor message', $sent[0]['text']);
+        $this->assertStringContainsString('Ivy Investor', $sent[0]['text']);
+        $this->assertStringContainsString('How do I fund my account?', $sent[0]['text']);
+        $this->assertStringNotContainsString($inv->email, $sent[0]['text'], 'no email address in the alert');
+    }
+
+    public function test_a_deposit_enquiry_sent_from_the_chat_is_labelled_with_its_reference(): void
+    {
+        $this->staff();
+        $this->telegramOn();
+        $inv = $this->investor();
+        $dep = Deposit::create(['user_id' => $inv->id, 'investment_plan_id' => $this->plan->id, 'amount' => 100, 'payment_method' => 'pending', 'transaction_reference' => 'DEP-TG1', 'status' => 'pending']);
+
+        $this->chat($inv, ['deposit_id' => $dep->id])->assertCreated();
+
+        $this->assertStringContainsString('New deposit enquiry', $this->telegramSent()[0]['text']);
+        $this->assertStringContainsString('DEP-TG1', $this->telegramSent()[0]['text']);
+    }
+
+    public function test_an_assigned_agent_with_a_chat_id_is_messaged_directly_and_the_staff_chat_is_not(): void
+    {
+        $agent = $this->staff('financial', ['telegram_chat_id' => '555111']);
+        $this->telegramOn();
+        $inv = $this->investor();
+        $inv->forceFill(['assigned_agent_id' => $agent->id])->save();
+
+        $this->chat($inv)->assertCreated();
+
+        $this->assertSame(['555111'], array_column($this->telegramSent(), 'chat'));
+    }
+
+    public function test_if_the_agent_dm_is_not_confirmed_the_staff_chat_is_used_so_nothing_is_missed(): void
+    {
+        $agent = $this->staff('financial', ['telegram_chat_id' => '555111']);
+        config(['services.telegram.bot_token' => 'TESTTOKEN', 'services.telegram.chat_id' => '-100STAFF']);
+        $this->fakeTelegram(Http::sequence()->push(['ok' => false], 200)->push(['ok' => true], 200));
+        $inv = $this->investor();
+        $inv->forceFill(['assigned_agent_id' => $agent->id])->save();
+
+        $this->chat($inv)->assertCreated();
+
+        $this->assertSame(['555111', '-100STAFF'], array_column($this->telegramSent(), 'chat'));
+    }
+
+    public function test_the_deposit_flow_does_not_add_a_second_telegram_ping_for_its_enquiry(): void
+    {
+        $this->staff();
+        $this->telegramOn();
+        $this->deposit($this->investor())->assertCreated();
+
+        foreach ($this->telegramSent() as $m) {
+            $this->assertStringNotContainsString('New deposit enquiry', $m['text']);
+        }
+        $this->assertSame(1, Message::where('topic', 'deposit')->count(), 'the in-dashboard enquiry is still created');
+    }
+
+    public function test_a_retried_send_pings_telegram_once(): void
+    {
+        $this->staff();
+        $this->telegramOn();
+        $inv = $this->investor();
+        $t = $this->token() . 'tg';
+
+        $this->chat($inv, ['client_token' => $t])->assertCreated();
+        $this->chat($inv, ['client_token' => $t])->assertOk();
+
+        $this->assertCount(1, $this->telegramSent());
+    }
+
+    public function test_the_message_is_saved_and_notified_in_app_when_telegram_is_down_or_unconfigured(): void
+    {
+        $fin = $this->staff();
+        config(['services.telegram.bot_token' => 'TESTTOKEN', 'services.telegram.chat_id' => '-100STAFF']);
+        $this->fakeTelegram(Http::response('boom', 500));
+
+        $this->chat($this->investor())->assertCreated();
+        $this->assertSame(1, Message::count());
+        $this->assertCount(1, $this->unreadAlerts($fin, 'investor_message'));
+
+        config(['services.telegram.bot_token' => null, 'services.telegram.chat_id' => null]);
+        $this->chat($this->investor())->assertCreated();
+        $this->assertSame(2, Message::count());
+    }
 }

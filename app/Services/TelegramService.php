@@ -157,6 +157,28 @@ public function newDeposit(string $investorName, float $amount, string $referenc
         return $this->sendMessage($this->marvflowChatId, $text);
     }
     
+    // MarvFlow Team Dashboard: SSI staff (Financial Team / Admin) replied to MarvFlow. Same destination and rules as
+    // newMarvflowRequest(): only the MarvFlow chat, never SSI's own chats; logs and returns false (never throws) when not configured.
+    // Deliberately carries NO message body: just who, where and the subject (the content is read in the dashboard).
+    public function marvflowStaffContact(string $source, string $senderName, string $senderRole, ?string $subject = null): bool
+    {
+        if (!$this->marvflowChatId) {
+            Log::warning('MarvFlow Telegram staff-contact alert skipped: TELEGRAM_MARVFLOW_CHAT_ID is not configured.', ['source' => $source]);
+            return false;
+        }
+
+        $role = $senderRole === 'admin' ? 'Admin' : 'Financial Team';
+        $text =
+            "💬 <b>SSI STAFF CONTACTED MARVFLOW</b>\n\n" .
+            "👤 <b>From:</b> " . e($senderName) . " ({$role})\n" .
+            "📍 <b>Where:</b> " . e($source) . "\n" .
+            ($subject !== null && $subject !== '' ? "📌 <b>Subject:</b> " . e(mb_substr($subject, 0, 200)) . "\n" : '') .
+            "\n👉 Open the MarvFlow dashboard to read and reply.\n" .
+            "🕐 " . now()->format('Y-m-d H:i');
+
+        return $this->sendMessage($this->marvflowChatId, $text);
+    }
+
     public function sendMessage(int|string $chatId, string $message): bool
 {
     if (!$this->token) {
@@ -214,6 +236,24 @@ public function newDeposit(string $investorName, float $amount, string $referenc
             Log::warning('Telegram agent message exception.', ['error' => $this->safeError($e)]);
             return false;
         }
+    }
+
+    /**
+     * Heads-up that an investor wrote to the Financial Team inside the SSI dashboard (chat message or deposit enquiry).
+     * Goes to ONE agent's chat when $agentChatId is given, otherwise to the configured staff chat(s). Only what staff need to
+     * recognise the request: investor name + account id, topic, deposit reference and a short preview - no email, phone,
+     * balances or payment details. Replying is done in the SSI dashboard. Returns true only if Telegram confirmed delivery.
+     */
+    public function newInvestorMessage(string $investorName, ?string $accountId, bool $isDeposit, ?string $reference, string $preview, int|string|null $agentChatId = null): bool
+    {
+        $text =
+            ($isDeposit ? "💰 <b>New deposit enquiry</b>\n\n" : "💬 <b>New investor message</b>\n\n") .
+            "👤 <b>Investor:</b> " . e($investorName) . ($accountId ? " (" . e($accountId) . ")" : '') . "\n" .
+            ($reference ? "🔖 <b>Reference:</b> <code>" . e($reference) . "</code>\n" : '') .
+            "📝 <b>Message:</b> " . e(mb_strimwidth(trim(preg_replace('/\s+/u', ' ', $preview)), 0, 200, '…')) . "\n\n" .
+            "Reply in the SSI Financial dashboard → Messages. Nothing has been paid or approved.";
+
+        return $agentChatId ? $this->sendMessageConfirmed($agentChatId, $text) : $this->notify($text);
     }
 
     /**

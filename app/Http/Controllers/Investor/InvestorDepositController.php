@@ -312,7 +312,8 @@ class InvestorDepositController extends Controller
                   . " for {$planName}. Please send me the payment instructions for this deposit.";
             app(FinancialConversationService::class)->submit(
                 $user, ['body' => $body, 'body_html' => null], 'Deposit enquiry ' . $deposit->transaction_reference,
-                Message::TOPIC_DEPOSIT, $deposit, $this->enquiryToken($deposit), true
+                Message::TOPIC_DEPOSIT, $deposit, $this->enquiryToken($deposit), true,
+                false   // no extra Telegram ping: this flow already sends the staff-chat and assigned-agent deposit alerts
             );
         } catch (\Throwable $e) {
             Log::warning('Deposit enquiry message failed: ' . get_class($e));
