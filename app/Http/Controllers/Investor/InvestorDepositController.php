@@ -6,6 +6,8 @@ namespace App\Http\Controllers\Investor;
 use App\Http\Controllers\Controller;
 use App\Models\Deposit;
 use App\Models\InvestmentPlan;
+use App\Models\Message;
+use App\Services\FinancialConversationService;
 use App\Services\TelegramService;
 use App\Services\DepositPaymentService;
 use App\Services\DepositAgentResolver;
@@ -156,6 +158,10 @@ class InvestorDepositController extends Controller
 
         $notified = $this->notifyAssignedAgent($deposit, $user, $plan->name ?? 'Plan', $name);
 
+        // Deposit enquiry -> the EXISTING in-dashboard Financial Team conversation (no Telegram needed). Same guarantee as above:
+        // the deposit is saved, so a problem here is logged and never becomes an error for the investor.
+        $this->openDepositEnquiry($deposit, $user, $plan->name ?? 'Plan');
+
         return $this->depositResponse($deposit->fresh() ?? $deposit, $user, false, $notified, $plan->name);
     }
 
@@ -293,6 +299,26 @@ class InvestorDepositController extends Controller
         }
     }
 
+    /** Stable per-deposit token: calling this twice for one deposit can never create two enquiry messages. */
+    protected function enquiryToken(Deposit $deposit): string
+    {
+        return 'deposit-enquiry-' . $deposit->id;
+    }
+
+    protected function openDepositEnquiry(Deposit $deposit, $user, string $planName): void
+    {
+        try {
+            $body = "Deposit request {$deposit->transaction_reference}: $" . number_format((float) $deposit->amount, 2)
+                  . " for {$planName}. Please send me the payment instructions for this deposit.";
+            app(FinancialConversationService::class)->submit(
+                $user, ['body' => $body, 'body_html' => null], 'Deposit enquiry ' . $deposit->transaction_reference,
+                Message::TOPIC_DEPOSIT, $deposit, $this->enquiryToken($deposit), true
+            );
+        } catch (\Throwable $e) {
+            Log::warning('Deposit enquiry message failed: ' . get_class($e));
+        }
+    }
+
     protected function depositResponse(Deposit $deposit, $user, bool $duplicate, bool $notified = false, ?string $planName = null)
     {
         $agent = $this->agentPayload($user, $deposit->transaction_reference);
@@ -305,6 +331,11 @@ class InvestorDepositController extends Controller
             'agent'          => $agent,                                  // null => frontend shows the "details unavailable" fallback
             'agent_notified' => $duplicate ? (bool) $deposit->agent_notified_at : $notified,   // true only when Telegram confirmed
             'duplicate'      => $duplicate,
+            // The in-dashboard conversation about this deposit (the investor continues it on the Messages page).
+            'conversation'   => [
+                'available'  => Message::where('investor_id', $user->id)->where('client_token', $this->enquiryToken($deposit))->exists(),
+                'agent_name' => app(FinancialConversationService::class)->assignedAgent($user)?->name,
+            ],
         ], $duplicate ? 200 : 201);
     }
 }

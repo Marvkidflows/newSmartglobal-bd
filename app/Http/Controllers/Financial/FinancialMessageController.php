@@ -23,8 +23,10 @@ use App\Models\Message;
 use App\Models\User;
 use App\Notifications\FinancialAlertNotification;
 use App\Services\FinancialAuditService;
+use App\Services\FinancialConversationService;
 use App\Services\FinancialMailService;
 use App\Services\RichMessageBody;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
@@ -51,7 +53,7 @@ class FinancialMessageController extends Controller
 
         $v = $request->validate([
             'q'      => ['nullable', 'string', 'max:100'],
-            'filter' => ['nullable', 'in:all,unread'],
+            'filter' => ['nullable', 'in:all,unread,unanswered,deposit,mine'],
         ]);
 
         $base = Message::financial();
@@ -66,6 +68,17 @@ class FinancialMessageController extends Controller
             $base->whereIn('investor_id', Message::unreadByFinancial()->select('investor_id'));
         }
 
+        $filter = $v['filter'] ?? 'all';
+        if ($filter === 'unanswered') {
+            // Conversations whose LAST message is from the investor (nobody on the Financial Team has replied yet).
+            $base->whereIn('investor_id', $this->awaitingReplyInvestorIds());
+        } elseif ($filter === 'deposit') {
+            $base->whereIn('investor_id', Message::financial()->where('topic', Message::TOPIC_DEPOSIT)->select('investor_id'));
+        } elseif ($filter === 'mine') {
+            // Conversations of investors assigned to the signed-in agent (the EXISTING users.assigned_agent_id).
+            $base->whereIn('investor_id', User::where('assigned_agent_id', $request->user()->id)->select('id'));
+        }
+
         $page = $base->selectRaw('investor_id, MAX(id) as last_id')
             ->groupBy('investor_id')->orderByDesc('last_id')->paginate(30);
 
@@ -74,9 +87,13 @@ class FinancialMessageController extends Controller
         $last    = Message::whereIn('id', $lastIds)->get()->keyBy('investor_id');
         $unread  = Message::unreadByFinancial()->whereIn('investor_id', $ids)
             ->selectRaw('investor_id, COUNT(*) as c')->groupBy('investor_id')->pluck('c', 'investor_id');
-        $users   = User::whereIn('id', $ids)->where('role', 'investor')->with('investorRank')->get(['id', 'name', 'email', 'status', 'investor_rank_id'])->keyBy('id');
+        $users   = User::whereIn('id', $ids)->where('role', 'investor')->with('investorRank')->get(['id', 'name', 'email', 'status', 'investor_rank_id', 'assigned_agent_id'])->keyBy('id');
+        $deposit = Message::financial()->where('topic', Message::TOPIC_DEPOSIT)->whereIn('investor_id', $ids)
+            ->selectRaw('investor_id, COUNT(*) as c')->groupBy('investor_id')->pluck('c', 'investor_id');
+        $agents  = User::whereIn('id', $users->pluck('assigned_agent_id')->filter())->pluck('name', 'id');
 
-        $conversations = $ids->map(function ($id) use ($last, $unread, $users) {
+        $awaiting = $this->awaitingReplyInvestorIds();
+        $conversations = $ids->map(function ($id) use ($last, $unread, $users, $deposit, $agents, $awaiting) {
             $u = $users->get($id);
             $m = $last->get($id);
             if (!$u || !$m) return null;
@@ -90,12 +107,17 @@ class FinancialMessageController extends Controller
                     'created_at' => $m->created_at->toIso8601String(),
                 ],
                 'unread_count' => (int) ($unread[$id] ?? 0),
+                'has_deposit_enquiry' => (int) ($deposit[$id] ?? 0) > 0,
+                // 'awaiting_reply' = the investor wrote last; 'answered' = the Financial Team wrote last
+                'status'       => $awaiting->contains($id) ? 'awaiting_reply' : 'answered',
+                'assigned_agent' => $u->assigned_agent_id ? ['id' => (int) $u->assigned_agent_id, 'name' => $agents[$u->assigned_agent_id] ?? null] : null,
             ];
         })->filter()->values();
 
         return response()->json([
             'conversations' => $conversations,
             'total_unread'  => Message::unreadByFinancial()->count(),
+            'total_unanswered' => $awaiting->count(),
             'meta'          => ['total' => $page->total(), 'page' => $page->currentPage(), 'last_page' => $page->lastPage()],
         ]);
     }
@@ -104,7 +126,7 @@ class FinancialMessageController extends Controller
     public function unreadCount()
     {
         Gate::authorize('financial.communicate');
-        return response()->json(['unread' => Message::unreadByFinancial()->count()]);
+        return response()->json(['unread' => Message::unreadByFinancial()->count(), 'unanswered' => $this->awaitingReplyInvestorIds()->count()]);
     }
 
     // GET /financial/messages/{investor}  — thread + mark investor messages read
@@ -113,12 +135,14 @@ class FinancialMessageController extends Controller
         Gate::authorize('financial.communicate');
         $this->ensureInvestor($investor);
 
-        $rows = Message::financial()->conversation($investor->id)->with('sender:id,name')->get();
+        $rows = Message::financial()->conversation($investor->id)->with(['sender:id,name', 'deposit:id,user_id,transaction_reference,amount,status'])->get();
 
         Message::unreadByFinancial()->where('investor_id', $investor->id)->update(['read_by_financial' => true]);
 
         return response()->json([
             'investor' => ['id' => $investor->id, 'name' => $investor->name, 'rank' => $investor->rankBadge(), 'email' => $investor->email, 'status' => $investor->status ?? 'active'],
+            'assigned_agent' => ($a = app(FinancialConversationService::class)->assignedAgent($investor)) ? ['id' => $a->id, 'name' => $a->name] : null,
+            'status'   => $rows->isEmpty() ? 'none' : ($this->awaitingReplyInvestorIds()->contains($investor->id) ? 'awaiting_reply' : 'answered'),
             'thread'   => $rows->map(fn (Message $m) => $this->format($m, $investor))->values(),
         ]);
     }
@@ -135,9 +159,15 @@ class FinancialMessageController extends Controller
             'body_html' => ['nullable', 'string', 'max:40000'],     // formatted message (sanitised here)
             'kind'    => ['nullable', 'in:message,notice'],
             'also_email' => ['nullable', 'boolean'],
+            'client_token' => ['nullable', 'string', 'regex:/^[A-Za-z0-9_-]{16,64}$/'],   // double-click / retry guard
         ]);
         $content = $this->rich()->resolve($v);                       // ['body' => plain text, 'body_html' => safe html|null]
         $kind = $v['kind'] ?? 'message';
+
+        // A retry of a reply that is already saved: return it (no second row, no second notification).
+        if ($dup = $this->findDuplicate($investor, $v['client_token'] ?? null)) {
+            return $this->duplicateResponse($dup, $investor);
+        }
         if ($kind === 'notice') {
             Gate::authorize('financial.issue-notices');
         }
@@ -147,7 +177,13 @@ class FinancialMessageController extends Controller
 
         $actor = $request->user();
 
-        $message = DB::transaction(function () use ($actor, $investor, $v, $kind, $content) {
+        // A reply continues the topic of the conversation it answers (so a deposit enquiry stays identifiable end to end).
+        $lastFromInvestor = Message::financial()->where('investor_id', $investor->id)->where('initiated_by', 'investor')->latest('id')->first();
+        $topic     = ($lastFromInvestor && $lastFromInvestor->topic === Message::TOPIC_DEPOSIT) ? Message::TOPIC_DEPOSIT : Message::TOPIC_GENERAL;
+        $depositId = $topic === Message::TOPIC_DEPOSIT ? $lastFromInvestor->deposit_id : null;
+
+        try {
+        $message = DB::transaction(function () use ($actor, $investor, $v, $kind, $content, $topic, $depositId) {
             $m = Message::create([
                 'sender_id'         => $actor->id,
                 'receiver_id'       => $investor->id,
@@ -159,6 +195,9 @@ class FinancialMessageController extends Controller
                 'department'        => 'financial',
                 'sender_label'      => Message::FINANCIAL_SENDER_LABEL,
                 'kind'              => $kind,
+                'topic'             => $topic,
+                'deposit_id'        => $depositId,
+                'client_token'      => $v['client_token'] ?? null,
                 'read_by_admin'     => true,
                 'read_by_financial' => true,
                 'read_by_investor'  => false,
@@ -170,6 +209,15 @@ class FinancialMessageController extends Controller
             }
             return $m;
         });
+        } catch (QueryException $e) {
+            // Two identical sends raced past the pre-check above: UNIQUE (investor_id, client_token) let only one row in (the
+            // failed transaction was rolled back). Return the row that won - same answer as a sequential retry, no error, no
+            // second notification. Any other database error is not ours to hide.
+            if ($dup = $this->findDuplicate($investor, $v['client_token'] ?? null)) {
+                return $this->duplicateResponse($dup, $investor);
+            }
+            throw $e;
+        }
 
         $investor->notify($this->notification($kind, $v['subject'] ?? null, $message->id));
 
@@ -358,6 +406,23 @@ class FinancialMessageController extends Controller
 
     // ── helpers ────────────────────────────────────────────────────────
 
+    /** Investors (with a Financial conversation) whose most recent Financial message is from the investor: awaiting a reply. */
+    protected function awaitingReplyInvestorIds(): \Illuminate\Support\Collection
+    {
+        $lastIds = Message::financial()->whereNull('broadcast_id')->selectRaw('MAX(id) as last_id')->groupBy('investor_id')->pluck('last_id');
+        return Message::whereIn('id', $lastIds)->where('initiated_by', 'investor')->pluck('investor_id');
+    }
+
+    protected function findDuplicate(User $investor, ?string $token): ?Message
+    {
+        return $token ? Message::where('investor_id', $investor->id)->where('client_token', $token)->first() : null;
+    }
+
+    protected function duplicateResponse(Message $dup, User $investor)
+    {
+        return response()->json(['message' => 'Message already sent.', 'duplicate' => true, 'data' => $this->format($dup->load('sender:id,name', 'deposit:id,user_id,transaction_reference,amount,status'), $investor), 'email' => null], 200);
+    }
+
     protected function ensureInvestor(User $u): void
     {
         abort_unless($u->role === 'investor', 404);
@@ -370,7 +435,7 @@ class FinancialMessageController extends Controller
             $isNotice ? 'Financial Team Notice' : 'New message from the Financial Team',
             $subject ?: ($isNotice ? 'You have a new official notice from the Financial Team.' : 'You have a new message from the Financial Team.'),
             $isNotice ? 'financial_notice' : 'financial_message',
-            array_filter(['message_id' => $messageId, 'department' => 'financial'])
+            array_filter(['message_id' => $messageId, 'department' => 'financial', 'link' => '/investor/messages'])
         );
     }
 
@@ -388,6 +453,8 @@ class FinancialMessageController extends Controller
             'body_html'    => $this->rich()->forDisplay($m->body_html),
             'kind'         => $m->kind,
             'department'   => $m->department,
+            'topic'        => $m->topic ?? 'general',
+            'deposit'      => ($m->deposit_id && $m->deposit) ? ['id' => $m->deposit->id, 'reference' => $m->deposit->transaction_reference, 'amount' => (float) $m->deposit->amount, 'status' => $m->deposit->status] : null,
             'broadcast_id' => $m->broadcast_id,
             'status'       => $fromInvestor
                 ? ($m->read_by_financial ? 'read' : 'unread')

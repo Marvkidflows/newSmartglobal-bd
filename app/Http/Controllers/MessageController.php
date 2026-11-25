@@ -3,13 +3,13 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Deposit;
 use App\Models\Message;
+use App\Services\FinancialConversationService;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use App\Services\RichMessageBody;
-use Illuminate\Support\Facades\Notification;
-use App\Notifications\FinancialAlertNotification;
 
 class MessageController extends Controller
 {
@@ -239,27 +239,14 @@ class MessageController extends Controller
 
         // Full correspondence for this investor — support AND Financial Team
         // rows share the one thread; `department`/`sender_label` say who wrote each.
-        $thread = Message::conversation($investor->id)
-            ->get()
-            ->map(fn($m) => [
-                'id'           => $m->id,
-                'body'         => $m->body,
-                'body_html'    => $this->rich()->forDisplay($m->body_html),
-                'from'         => $m->initiated_by,  // 'admin' or 'investor' (unchanged)
-                'subject'      => $m->subject,
-                'created_at'   => $m->created_at->toDateTimeString(),
-                'time_ago'     => $m->created_at->diffForHumans(),
-                // Added fields — purely additive
-                'department'   => $m->department ?? 'admin',
-                'sender_label' => $m->initiated_by === 'admin' ? $m->displaySender() : 'You',
-                'kind'         => $m->kind ?? 'message',
-                'was_unread'   => $m->initiated_by === 'admin' && !$m->read_by_investor,
-                'status'       => $m->initiated_by === 'admin'
-                                    ? ($m->read_by_investor ? 'read' : 'unread')
-                                    : (($m->department ?? 'admin') === 'financial'
-                                        ? ($m->read_by_financial ? 'read' : 'delivered')
-                                        : ($m->read_by_admin ? 'read' : 'delivered')),
-            ]);
+        $rows   = Message::conversation($investor->id)->with('deposit:id,user_id,transaction_reference,amount,status')->get();
+        $thread = $rows->map(fn ($m) => $this->investorRow($m));
+
+        // Who the investor is talking to on the Financial Team: their assigned agent's NAME only (never contact details).
+        $agent  = app(FinancialConversationService::class)->assignedAgent($investor);
+        // Latest Financial row = highest id (the same rule the Financial Team inbox uses), never "last in created_at order",
+        // which is ambiguous when two messages are written within the same second.
+        $last   = $rows->where('department', 'financial')->sortBy('id')->last();
 
         // Count unread messages FROM admin
         $unreadCount = Message::where('investor_id', $investor->id)
@@ -278,10 +265,44 @@ class MessageController extends Controller
                 'thread'       => $thread,
                 'unread_count' => $unreadCount,
                 'has_messages' => $thread->count() > 0,
+                'agent'        => $agent ? ['name' => $agent->name ?: 'Your Financial Team Agent'] : null,
+                // Financial conversation state for the chat header: none | awaiting_reply (investor wrote last) | answered
+                'financial_status' => !$last ? 'none' : ($last->initiated_by === 'investor' ? 'awaiting_reply' : 'answered'),
             ]);
         }
 
         return view('investor.messages.index', compact('thread', 'unreadCount'));
+    }
+
+
+    /** One investor-facing thread row. Shared by the thread, the send response and (indirectly) polling, so they can never drift. */
+    protected function investorRow(Message $m): array
+    {
+        $isStaff = $m->initiated_by === 'admin';
+        $dep     = ($m->deposit_id && $m->relationLoaded('deposit')) ? $m->deposit : ($m->deposit_id ? $m->deposit()->first() : null);
+        // Defence in depth: a deposit is only ever described to the investor who owns it.
+        $dep     = ($dep && (int) $dep->user_id === (int) $m->investor_id) ? $dep : null;
+
+        return [
+            'id'           => $m->id,
+            'body'         => $m->body,
+            'body_html'    => $this->rich()->forDisplay($m->body_html),
+            'from'         => $m->initiated_by,  // 'admin' or 'investor' (unchanged)
+            'subject'      => $m->subject,
+            'created_at'   => $m->created_at->toDateTimeString(),
+            'time_ago'     => $m->created_at->diffForHumans(),
+            'department'   => $m->department ?? 'admin',
+            'sender_label' => $isStaff ? $m->displaySender() : 'You',
+            'kind'         => $m->kind ?? 'message',
+            'topic'        => $m->topic ?? 'general',
+            'deposit'      => $dep ? ['id' => $dep->id, 'reference' => $dep->transaction_reference, 'amount' => (float) $dep->amount, 'status' => $dep->status] : null,
+            'was_unread'   => $isStaff && !$m->read_by_investor,
+            'status'       => $isStaff
+                                ? ($m->read_by_investor ? 'read' : 'unread')
+                                : (($m->department ?? 'admin') === 'financial'
+                                    ? ($m->read_by_financial ? 'read' : 'delivered')
+                                    : ($m->read_by_admin ? 'read' : 'delivered')),
+        ];
     }
 
     /**
@@ -311,59 +332,39 @@ class MessageController extends Controller
             // Added: which team the investor is writing to. Defaults to the
             // existing support inbox so current clients are unaffected.
             'department' => ['nullable', 'in:admin,financial'],
+            // Financial Team enquiries: what it is about, the investor's own deposit (ownership checked below) and a per-send
+            // key so a double click / retry returns the SAME message instead of a duplicate.
+            'topic'        => ['nullable', 'in:general,deposit'],
+            'deposit_id'   => ['nullable', 'integer'],
+            'client_token' => ['nullable', 'string', 'regex:/^[A-Za-z0-9_-]{16,64}$/'],
         ]);
 
         $content    = $this->rich()->resolve($validated);            // ['body' => plain text, 'body_html' => safe html|null]
         $department = $validated['department'] ?? 'admin';
 
         if ($department === 'financial') {
-            $financial = User::where('role', 'financial')->orderBy('id')->first();
-            if (!$financial) {
-                return response()->json(['message' => 'The Financial Team is currently unavailable.'], 503);
+            // Optional link to one of the investor's OWN deposits. Someone else's deposit id is treated as not found, so it can
+            // neither be linked nor probed.
+            $deposit = null;
+            if (!empty($validated['deposit_id'])) {
+                $deposit = Deposit::where('id', $validated['deposit_id'])->where('user_id', $investor->id)->first();
+                if (!$deposit) return response()->json(['message' => 'That deposit could not be found.'], 404);
             }
 
-            $message = Message::create([
-                'sender_id'         => $investor->id,
-                'receiver_id'       => $financial->id,
-                'investor_id'       => $investor->id,
-                'subject'           => $validated['subject'] ?? null,
-                'body'              => $content['body'],
-                'body_html'         => $content['body_html'],
-                'initiated_by'      => 'investor',
-                'department'        => 'financial',
-                'read_by_admin'     => true,   // not part of the support inbox's unread count
-                'read_by_financial' => false,
-                'read_by_investor'  => true,
-            ]);
-
-            try {
-                Notification::send(
-                    User::where('role', 'financial')->get(),
-                    new FinancialAlertNotification(
-                        'New investor message',
-                        ($investor->name ?? 'An investor') . ': ' . str(($validated['subject'] ?? null) ?: $content['body'])->limit(80),
-                        'investor_message',
-                        ['investor_id' => $investor->id, 'message_id' => $message->id]
-                    )
-                );
-            } catch (\Throwable $e) { report($e); }
+            $result = app(FinancialConversationService::class)->submit(
+                $investor, $content, $validated['subject'] ?? null,
+                $validated['topic'] ?? Message::TOPIC_GENERAL, $deposit, $validated['client_token'] ?? null
+            );
+            if (!$result) {
+                return response()->json(['message' => 'The Financial Team is currently unavailable.'], 503);
+            }
+            $message = $result['message'];
 
             return response()->json([
-                'message' => 'Message sent to the Financial Team!',
-                'data'    => [
-                    'id'           => $message->id,
-                    'body'         => $message->body,
-                    'body_html'    => $this->rich()->forDisplay($message->body_html),
-                    'from'         => 'investor',
-                    'subject'      => $message->subject,
-                    'department'   => 'financial',
-                    'sender_label' => 'You',
-                    'kind'         => 'message',
-                    'status'       => 'delivered',
-                    'created_at'   => $message->created_at->toDateTimeString(),
-                    'time_ago'     => $message->created_at->diffForHumans(),
-                ],
-            ], 201);
+                'message'   => $result['duplicate'] ? 'Message already sent.' : 'Message sent to the Financial Team!',
+                'duplicate' => $result['duplicate'],
+                'data'      => $this->investorRow($message),
+            ], $result['duplicate'] ? 200 : 201);
         }
 
         // Find any admin to receive the message

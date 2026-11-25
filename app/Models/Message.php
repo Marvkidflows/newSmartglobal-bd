@@ -25,6 +25,9 @@ class Message extends Model
         'read_by_admin',
         'read_by_investor',
         'read_by_financial',
+        'topic',
+        'deposit_id',
+        'client_token',
     ];
 
     protected $casts = [
@@ -32,6 +35,9 @@ class Message extends Model
         'read_by_investor' => 'boolean',
         'read_by_financial'=> 'boolean',
     ];
+
+    public const TOPIC_GENERAL = 'general';
+    public const TOPIC_DEPOSIT = 'deposit';
 
     // ── RELATIONSHIPS ──────────────────────────────────────────────────────
 
@@ -53,13 +59,22 @@ class Message extends Model
         return $this->belongsTo(User::class, 'investor_id');
     }
 
+    // The deposit a deposit-enquiry message is about (read-only link; no foreign key by design)
+    public function deposit()
+    {
+        return $this->belongsTo(Deposit::class, 'deposit_id');
+    }
+
     // ── SCOPES ─────────────────────────────────────────────────────────────
 
     // All messages in a conversation between admin and a specific investor
     public function scopeConversation($query, $investorId)
     {
+        // created_at has one-second resolution, so a deposit enquiry and the staff reply written in the same second tie.
+        // `id` is the tie-breaker: it makes the order (and "who wrote last") deterministic on every database.
         return $query->where('investor_id', $investorId)
-                     ->orderBy('created_at', 'asc');
+                     ->orderBy('created_at', 'asc')
+                     ->orderBy('id', 'asc');
     }
 
     // Messages admin has not read yet
